@@ -32,7 +32,7 @@ def lay_cau_hinh_nguong(vi_tri_may):
         res.raise_for_status()
         du_lieu = res.json()
         if du_lieu:
-            return du_lieu
+             return du_lieu.pop(0)
     except Exception:
         pass
     return mac_dinh
@@ -131,7 +131,7 @@ def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
             with n5:
                 in_pr = st.number_input("⏲️ Áp suất tối thiểu", min_value=0.0, max_value=50.0, value=NG_PRESS_MIN, step=0.5)
 
-            u1, u2 = st.columns([2, 1])
+            u1, u2 = st.columns(2)
             with u1:
                 nguoi_sua = st.text_input("👷 Tên người điều chỉnh", placeholder="VD: Tổ trưởng Ca Ngày")
             with u2:
@@ -150,7 +150,7 @@ def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
                         st.error(f"Lỗi khi lưu ngưỡng: {e_save}")
 
     if not df_plc.empty:
-        moi_nhat = df_plc.iloc
+        moi_nhat = df_plc.to_dict(orient="records").pop(0)
 
         t1_val = float(moi_nhat['temp1'])
         t2_val = float(moi_nhat['temp2'])
@@ -220,4 +220,26 @@ def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
             st.markdown("**⏲️ Biểu đồ Áp suất**")
             st.altair_chart(ve_bieu_do_chuan(df_bieu_do, ["pressure"], "Áp suất", 0, 15, ["#AB63FA"]), use_container_width=True)
 
+                    # Nút gửi dữ liệu kèm bối cảnh sang Tab 2 cho AI phân tích
+        if st.button("🤖 Gửi số liệu & Bối cảnh này sang Tab 2 để AI chẩn đoán", type="primary", use_container_width=True):
+            du_lieu_tom_tat = df_plc.head(10).to_string(index=False)
+            cau_hoi_plc = (
+                f"THÔNG TIN BỐI CẢNH VẬN HÀNH HIỆN TRƯỜNG:\n"
+                f"- Ca làm việc: {ca_truc}\n"
+                f"- Cụm / Vị trí máy: {vi_tri_may}\n"
+                f"- Ngưỡng cảnh báo đang cài đặt: Temp1 <= {NG_T1}°C, Temp2 <= {NG_T2}°C, Dòng <= {NG_CUR}A (Định mức {DONG_DINH_MUC}A), Áp suất >= {NG_PRESS_MIN}\n"
+                f"- Trạng thái vận hành: {trang_thai_may}\n"
+                f"- Sản phẩm đang chạy: {dinh_luong_giay}\n\n"
+                f"10 MẪU THÔNG SỐ ĐO TỪ PLC SIEMENS (DB3):\n{du_lieu_tom_tat}\n\n"
+                "Dựa trên bối cảnh vận hành, bộ ngưỡng cài đặt riêng của cụm máy và chuỗi số liệu PLC trên, hãy đánh giá tình trạng thiết bị, "
+                "phân tích nguyên nhân nếu có bất thường và đề xuất hành động kiểm tra bảo trì tự chủ cụ thể."
+            )
+            ham_luu_tin_nhan(st.session_state.phien_hien_tai, "user", f"🔍 Yêu cầu AI phân tích vận hành ({vi_tri_may} - {ca_truc}).")
+            st.session_state.tu_dong_hoi_plc = cau_hoi_plc
+            st.rerun()
+    else:
+        st.warning(f"Đang chờ dữ liệu từ Supabase Cloud... ({loi_ket_noi_plc})")
+
+    st.divider()
+    hien_thi_so_ban_giao_ca()
 
