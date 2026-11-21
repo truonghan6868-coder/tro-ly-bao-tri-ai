@@ -1,225 +1,285 @@
 import os
-from datetime import datetime
-import altair as alt
+import sqlite3
+import time
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import requests
-import streamlit as st
-from streamlit_autorefresh import st_autorefresh
-from modules.tab_ban_giao import hien_thi_so_ban_giao_ca
+import snap7
+from snap7.util import get_real
+
+# 1. Nạp cấu hình từ file .env
+load_dotenv()
+PLC_IP = os.getenv("PLC_IP", "192.168.0.1")
+PLC_RACK = int(os.getenv("PLC_RACK", 0))
+PLC_SLOT = int(os.getenv("PLC_SLOT", 1))
+DB_NUMBER = int(os.getenv("PLC_DB_NUMBER", 3))
+DB_FILE = "bao_tri_ai.db"
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# Ngưỡng cảnh báo mặc định & Vị trí máy của trạm
+NGUONG_TEMP1 = float(os.getenv("NGUONG_TEMP1", 80.0))
+NGUONG_TEMP2 = float(os.getenv("NGUONG_TEMP2", 80.0))
+NGUONG_CURRENT = float(os.getenv("NGUONG_CURRENT", 65.0))
+VI_TRI_MAY_TRAM = os.getenv("VI_TRI_MAY_TRAM", "Cụm Lô ép (Press Roll - 75kW)")
+
+# Biến theo dõi trạng thái lỗi 2 chiều & chống spam
+dang_bi_loi = False
+thoi_diem_bat_dau_loi = None
+thoi_diem_canh_bao_cuoi = 0
+THOI_GIAN_NGHI_CANH_BAO = 300  # Nhắc lại sau mỗi 5 phút nếu lỗi chưa khắc phục
 
 
-def lay_cau_hinh_nguong(vi_tri_may):
-    """Tải cấu hình ngưỡng riêng của từng vị trí máy từ Supabase."""
-    mac_dinh = {
-        "nguong_temp1": 80.0,
-        "nguong_temp2": 80.0,
-        "nguong_current": 65.0,
-        "dong_dinh_muc": 135.0,
-        "nguong_press_min": 3.5,
-        "nguoi_cap_nhat": "Mặc định",
-        "thoi_gian_cap_nhat": ""
-    }
+# 2. Khởi tạo bảng lưu dự phòng cục bộ trong SQLite
+def khoi_tao_bang_plc():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS du_lieu_plc_db3 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thoi_gian TEXT,
+            temp1 REAL,
+            temp2 REAL,
+            speed REAL,
+            pressure REAL,
+            motor_current REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def dong_bo_nguong_tu_cloud():
+    """Tải ngưỡng cảnh báo mới nhất từ bảng cau_hinh_nguong trên Supabase."""
+    global NGUONG_TEMP1, NGUONG_TEMP2, NGUONG_CURRENT
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
     try:
-        url_du_an = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
-        key_du_an = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
-        endpoint = f"{url_du_an}/rest/v1/cau_hinh_nguong"
+        endpoint = f"{SUPABASE_URL}/rest/v1/cau_hinh_nguong"
         headers = {
-            "apikey": key_du_an,
-            "Authorization": f"Bearer {key_du_an}",
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
             "Cache-Control": "no-cache"
         }
-        params = {"vi_tri_may": f"eq.{vi_tri_may}", "select": "*"}
+        params = {
+            "vi_tri_may": f"eq.{VI_TRI_MAY_TRAM}",
+            "select": "nguong_temp1,nguong_temp2,nguong_current"
+        }
         res = requests.get(endpoint, headers=headers, params=params, timeout=8)
         res.raise_for_status()
         du_lieu = res.json()
         if du_lieu:
-            return du_lieu[0]
+            ban_ghi = du_lieu.pop(0)
+            NGUONG_TEMP1 = float(ban_ghi.get("nguong_temp1", NGUONG_TEMP1))
+            NGUONG_TEMP2 = float(ban_ghi.get("nguong_temp2", NGUONG_TEMP2))
+            NGUONG_CURRENT = float(ban_ghi.get("nguong_current", NGUONG_CURRENT))
     except Exception:
         pass
-    return mac_dinh
 
 
-def luu_cau_hinh_nguong(vi_tri_may, t1, t2, cur, dinh_muc, press_min, nguoi_sua):
-    """Cập nhật ngưỡng mới lên Supabase Cloud."""
-    url_du_an = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
-    key_du_an = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
-    endpoint = f"{url_du_an}/rest/v1/cau_hinh_nguong"
+def gui_tin_nhan_telegram(noi_dung_tin_nhan, loai_thong_bao="Cảnh báo"):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url_tg = "https://" + "api.telegram.org/bot" + f"{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": noi_dung_tin_nhan,
+            "parse_mode": "HTML"
+        }
+        res = requests.post(url_tg, json=payload, timeout=10)
+        res.raise_for_status()
+        print(f"📲 Đã gửi tin nhắn Telegram ({loai_thong_bao}) thành công!")
+    except Exception as e_tg:
+        print(f"⚠️ Lỗi gửi Telegram: {e_tg}")
+
+
+def dinh_dang_thoi_gian_su_co(tong_giay):
+    tong_giay = int(tong_giay)
+    gio = tong_giay // 3600
+    phut = (tong_giay % 3600) // 60
+    giay = tong_giay % 60
+    if gio > 0:
+        return f"{gio} giờ {phut} phút {giay} giây"
+    elif phut > 0:
+        return f"{phut} phút {giay} giây"
+    else:
+        return f"{giay} giây"
+
+
+def kiem_tra_canh_bao_hai_chieu(temp1, temp2, speed, pressure, current):
+    global dang_bi_loi, thoi_diem_bat_dau_loi, thoi_diem_canh_bao_cuoi
+
+    danh_sach_loi = []
+    if temp1 > NGUONG_TEMP1:
+        danh_sach_loi.append(f"• <b>Nhiệt độ 1 quá cao:</b> {temp1:.1f}°C (Ngưỡng: {NGUONG_TEMP1}°C)")
+    if temp2 > NGUONG_TEMP2:
+        danh_sach_loi.append(f"• <b>Nhiệt độ 2 quá cao:</b> {temp2:.1f}°C (Ngưỡng: {NGUONG_TEMP2}°C)")
+    if current > NGUONG_CURRENT:
+        danh_sach_loi.append(f"• <b>Dòng điện động cơ quá tải:</b> {current:.2f} A (Ngưỡng: {NGUONG_CURRENT} A)")
+
+    bay_gio = time.time()
+    gio_hien_tai_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+
+    # TRƯỜNG HỢP 1: CÓ THÔNG SỐ VƯỢT NGƯỠNG
+    if danh_sach_loi:
+        chi_tiet_loi = "\n".join(danh_sach_loi)
+
+        if not dang_bi_loi:
+            dang_bi_loi = True
+            thoi_diem_bat_dau_loi = bay_gio
+            thoi_diem_canh_bao_cuoi = bay_gio
+
+            tin_nhan_do = (
+                f"🚨 <b>BÁO ĐỘNG ĐỎ: VƯỢT NGƯỠNG ({VI_TRI_MAY_TRAM})</b> 🚨\n"
+                f"⏰ Thời điểm phát hiện: {gio_hien_tai_str}\n\n"
+                f"{chi_tiet_loi}\n\n"
+                f"📊 <b>Thông số tức thời:</b>\n"
+                f"- Tốc độ: {speed:.1f} | Áp suất: {pressure:.2f}\n"
+                f"👉 Kỹ thuật viên vui lòng kiểm tra thiết bị ngay!"
+            )
+            gui_tin_nhan_telegram(tin_nhan_do, "BÁO ĐỘNG ĐỎ")
+
+        elif bay_gio - thoi_diem_canh_bao_cuoi >= THOI_GIAN_NGHI_CANH_BAO:
+            thoi_diem_canh_bao_cuoi = bay_gio
+            thoi_gian_da_loi = dinh_dang_thoi_gian_su_co(bay_gio - thoi_diem_bat_dau_loi)
+
+            tin_nhan_nhac = (
+                f"🟠 <b>NHẮC LẠI SỰ CỐ CHƯA KHẮC PHỤC ({VI_TRI_MAY_TRAM})</b> 🟠\n"
+                f"⏳ Sự cố đã kéo dài: <b>{thoi_gian_da_loi}</b>\n\n"
+                f"{chi_tiet_loi}\n"
+                f"📊 Tốc độ: {speed:.1f} | Áp suất: {pressure:.2f}"
+            )
+            gui_tin_nhan_telegram(tin_nhan_nhac, "Nhắc lại sự cố")
+
+    # TRƯỜNG HỢP 2: TẤT CẢ THÔNG SỐ ĐỀU AN TOÀN
+    else:
+        if dang_bi_loi:
+            tong_thoi_gian_loi = dinh_dang_thoi_gian_su_co(bay_gio - thoi_diem_bat_dau_loi)
+            dang_bi_loi = False
+            thoi_diem_bat_dau_loi = None
+            thoi_diem_canh_bao_cuoi = 0
+
+            tin_nhan_xanh = (
+                f"✅ <b>HỆ THỐNG ĐÃ AN TOÀN TRỞ LẠI ({VI_TRI_MAY_TRAM})</b> ✅\n"
+                f"⏰ Thời điểm phục hồi: {gio_hien_tai_str}\n"
+                f"⏱️ Tổng thời gian sự cố: <b>{tong_thoi_gian_loi}</b>\n\n"
+                f"📊 <b>Thông số ổn định hiện tại:</b>\n"
+                f"- Nhiệt độ 1: {temp1:.1f}°C | Nhiệt độ 2: {temp2:.1f}°C\n"
+                f"- Dòng động cơ: {current:.2f} A\n"
+                f"- Tốc độ: {speed:.1f} | Áp suất: {pressure:.2f}"
+            )
+            gui_tin_nhan_telegram(tin_nhan_xanh, "AN TOÀN TRỞ LẠI")
+
+
+def luu_va_day_du_lieu(temp1, temp2, speed, pressure, current):
+    thoi_gian = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    t1, t2, sp, pr, cur = round(temp1, 2), round(temp2, 2), round(speed, 2), round(pressure, 2), round(current, 2)
+
+    # A. Lưu dự phòng vào SQLite trên máy tính
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        """INSERT INTO du_lieu_plc_db3 
+           (thoi_gian, temp1, temp2, speed, pressure, motor_current) 
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (thoi_gian, t1, t2, sp, pr, cur)
+    )
+    conn.commit()
+    conn.close()
+
+    # B. Đẩy thẳng lên Supabase Cloud
+    endpoint = f"{SUPABASE_URL}/rest/v1/du_lieu_plc_db3"
     headers = {
-        "apikey": key_du_an,
-        "Authorization": f"Bearer {key_du_an}",
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
+        "Prefer": "return=minimal"
     }
-    payload = {
-        "vi_tri_may": vi_tri_may,
-        "nguong_temp1": float(t1),
-        "nguong_temp2": float(t2),
-        "nguong_current": float(cur),
-        "dong_dinh_muc": float(dinh_muc),
-        "nguong_press_min": float(press_min),
-        "nguoi_cap_nhat": nguoi_sua,
-        "thoi_gian_cap_nhat": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    du_lieu_cloud = {
+        "thoi_gian": thoi_gian,
+        "temp1": t1,
+        "temp2": t2,
+        "speed": sp,
+        "pressure": pr,
+        "motor_current": cur
     }
-    res = requests.post(endpoint, json=payload, headers=headers, timeout=10)
+    res = requests.post(endpoint, json=du_lieu_cloud, headers=headers, timeout=10)
     res.raise_for_status()
 
 
-def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
-    gio_hien_tai = datetime.now().hour
-    ca_mac_dinh = 0 if 7 <= gio_hien_tai < 19 else 1
-    danh_sach_ca = [
-        "☀️ Ca Ngày (07:00 - 19:00)",
-        "🌙 Ca Đêm (19:00 - 07:00)"
-    ]
+def don_dep_du_lieu_cloud(so_ngay_giu_lai=7):
+    try:
+        moc_thoi_gian = (datetime.now() - timedelta(days=so_ngay_giu_lai)).strftime("%Y-%m-%d %H:%M:%S")
+        endpoint = f"{SUPABASE_URL}/rest/v1/du_lieu_plc_db3?thoi_gian=lt.{moc_thoi_gian}"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Prefer": "return=minimal"
+        }
+        res = requests.delete(endpoint, headers=headers, timeout=10)
+        res.raise_for_status()
+        print(f"🧹 Đã tự động dọn dẹp dữ liệu Cloud cũ hơn {so_ngay_giu_lai} ngày.")
+    except Exception as e_clean:
+        print(f"⚠️ Lỗi khi dọn dẹp dữ liệu cũ: {e_clean}")
 
-    # Thanh điều khiển làm mới
-    c_ref1, c_ref2, _ = st.columns([1.3, 1.2, 2])
-    with c_ref1:
-        tu_dong_cap_nhat = st.toggle("⚡ Tự động cập nhật (5s)", value=True)
-    with c_ref2:
-        if st.button("🔄 Làm mới ngay", use_container_width=True):
-            st.rerun()
 
-    if tu_dong_cap_nhat and not st.session_state.get("tu_dong_hoi_plc"):
-        st_autorefresh(interval=5000, key="plc_realtime_refresh")
+# 3. Kết nối PLC và chạy vòng lặp đọc - ghi - cảnh báo 2 chiều
+khoi_tao_bang_plc()
+plc = snap7.client.Client()
 
-    # Thanh chọn Bối cảnh vận hành thực tế
-    with st.container(border=True):
-        st.markdown("**🏭 Bối cảnh vận hành hiện trường (Gửi kèm khi nhờ AI phân tích):**")
-        bc1, bc2, bc3, bc4 = st.columns(4)
-        with bc1:
-            ca_truc = st.selectbox("🕒 Ca làm việc", danh_sach_ca, index=ca_mac_dinh)
-        with bc2:
-            vi_tri_may = st.selectbox("⚙️ Cụm / Vị trí máy", [
-                "Cụm Lô ép (Press Roll - 75kW)",
-                "Khu vực Sấy (Dryer)",
-                "Hệ thống Bơm chân không",
-                "Đo nồng độ bột (OC) / Bể khuấy"
-            ])
-        with bc3:
-            trang_thai_may = st.selectbox("🚦 Trạng thái chạy", [
-                "Đang chạy sản xuất",
-                "Chạy không tải / Chạy thử",
-                "Đang lên tốc độ",
-                "Đang dừng bảo trì"
-            ])
-        with bc4:
-            dinh_luong_giay = st.text_input("📄 Định lượng giấy (GSM)", value="125 GSM (OCC)")
+print(f"Đang kết nối tới PLC Siemens ({PLC_IP}) cho trạm [{VI_TRI_MAY_TRAM}]...")
 
-    # Tải bộ ngưỡng động tương ứng với vị trí máy đang chọn
-    cau_hinh = lay_cau_hinh_nguong(vi_tri_may)
-    NG_T1 = float(cau_hinh.get("nguong_temp1", 80.0))
-    NG_T2 = float(cau_hinh.get("nguong_temp2", 80.0))
-    NG_CUR = float(cau_hinh.get("nguong_current", 65.0))
-    DONG_DINH_MUC = float(cau_hinh.get("dong_dinh_muc", 135.0))
-    NG_PRESS_MIN = float(cau_hinh.get("nguong_press_min", 3.5))
+try:
+    plc.connect(PLC_IP, PLC_RACK, PLC_SLOT)
+    if plc.get_connected():
+        print("✅ Kết nối thành công! Hệ thống giám sát 2 chiều & đồng bộ ngưỡng đang chạy.\n")
+        dem_chu_ky = 0
 
-    # Ngăn cài đặt / điều chỉnh ngưỡng trực tiếp cho người vận hành
-    with st.expander(f"⚙️ Cài đặt ngưỡng cảnh báo riêng cho: {vi_tri_may}", expanded=False):
-        if cau_hinh.get("thoi_gian_cap_nhat"):
-            st.caption(f"Cập nhật lần cuối bởi **{cau_hinh.get('nguoi_cap_nhat')}** lúc `{cau_hinh.get('thoi_gian_cap_nhat')}`")
+        while True:
+            try:
+                # Đồng bộ lại ngưỡng cảnh báo từ Supabase mỗi 60 giây (20 chu kỳ x 3s)
+                if dem_chu_ky % 20 == 0:
+                    dong_bo_nguong_tu_cloud()
 
-        with st.form("form_cai_dat_nguong"):
-            n1, n2, n3, n4, n5 = st.columns(5)
-            with n1:
-                in_t1 = st.number_input("🌡️ Ngưỡng Temp 1 (°C)", min_value=10.0, max_value=250.0, value=NG_T1, step=1.0)
-            with n2:
-                in_t2 = st.number_input("🌡️ Ngưỡng Temp 2 (°C)", min_value=10.0, max_value=250.0, value=NG_T2, step=1.0)
-            with n3:
-                in_cur = st.number_input("🔌 Ngưỡng Dòng báo (A)", min_value=5.0, max_value=500.0, value=NG_CUR, step=1.0)
-            with n4:
-                in_dm = st.number_input("⚡ Dòng định mức (A)", min_value=10.0, max_value=600.0, value=DONG_DINH_MUC, step=5.0)
-            with n5:
-                in_pr = st.number_input("⏲️ Áp suất tối thiểu", min_value=0.0, max_value=50.0, value=NG_PRESS_MIN, step=0.5)
+                data = plc.db_read(DB_NUMBER, 0, 20)
+                temp1 = get_real(data, 0)
+                temp2 = get_real(data, 4)
+                speed = get_real(data, 8)
+                pressure = get_real(data, 12)
+                motor_current = get_real(data, 16)
 
-            u1, u2 = st.columns([2, 1])
-            with u1:
-                nguoi_sua = st.text_input("👷 Tên người điều chỉnh", placeholder="VD: Tổ trưởng Ca Ngày")
-            with u2:
-                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                nut_luu_nguong = st.form_submit_button("💾 Lưu ngưỡng lên Cloud", type="primary", use_container_width=True)
+                # Kiểm tra cảnh báo 2 chiều (Báo lỗi & Báo phục hồi)
+                kiem_tra_canh_bao_hai_chieu(temp1, temp2, speed, pressure, motor_current)
 
-            if nut_luu_nguong:
-                if not nguoi_sua.strip():
-                    st.warning("⚠️ Vui lòng nhập tên người điều chỉnh để lưu lịch sử!")
-                else:
-                    try:
-                        luu_cau_hinh_nguong(vi_tri_may, in_t1, in_t2, in_cur, in_dm, in_pr, nguoi_sua.strip())
-                        st.success(f"✅ Đã lưu ngưỡng mới cho '{vi_tri_may}'! Hệ thống cảnh báo sẽ tự đồng bộ sau vài giây.")
-                        st.rerun()
-                    except Exception as e_save:
-                        st.error(f"Lỗi khi lưu ngưỡng: {e_save}")
+                # Lưu SQLite & Đẩy lên Cloud
+                luu_va_day_du_lieu(temp1, temp2, speed, pressure, motor_current)
 
-    if not df_plc.empty:
-        moi_nhat = df_plc.iloc[0]
-
-        t1_val = float(moi_nhat['temp1'])
-        t2_val = float(moi_nhat['temp2'])
-        sp_val = float(moi_nhat['speed'])
-        pr_val = float(moi_nhat['pressure'])
-        cur_val = float(moi_nhat['motor_current'])
-        phan_tram_tai = (cur_val / DONG_DINH_MUC) * 100 if DONG_DINH_MUC > 0 else 0
-
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric(
-            "🌡️ Nhiệt độ 1", f"{t1_val:.1f} °C",
-            delta=f"Vượt +{t1_val - NG_T1:.1f}°C" if t1_val > NG_T1 else f"An toàn (Max {NG_T1}°C)",
-            delta_color="inverse" if t1_val > NG_T1 else "normal"
-        )
-        m2.metric(
-            "🌡️ Nhiệt độ 2", f"{t2_val:.1f} °C",
-            delta=f"Vượt +{t2_val - NG_T2:.1f}°C" if t2_val > NG_T2 else f"An toàn (Max {NG_T2}°C)",
-            delta_color="inverse" if t2_val > NG_T2 else "normal"
-        )
-        m3.metric(
-            "⚡ Tốc độ", f"{sp_val:.1f}",
-            delta="Đang chạy" if sp_val > 50 else "Dừng / Chậm",
-            delta_color="normal" if sp_val > 50 else "off"
-        )
-        m4.metric(
-            "⏲️ Áp suất", f"{pr_val:.2f}",
-            delta=f"Thấp (<{NG_PRESS_MIN})" if pr_val < NG_PRESS_MIN else f"Đạt (>={NG_PRESS_MIN})",
-            delta_color="inverse" if pr_val < NG_PRESS_MIN else "normal"
-        )
-        m5.metric(
-            "🔌 Dòng động cơ", f"{cur_val:.2f} A ({phan_tram_tai:.0f}%)",
-            delta=f"Quá tải +{cur_val - NG_CUR:.1f}A" if cur_val > NG_CUR else f"Ổn định (Max {NG_CUR}A)",
-            delta_color="inverse" if cur_val > NG_CUR else "normal"
-        )
-
-        st.divider()
-
-        df_bieu_do = df_plc.head(30).iloc[::-1].copy()
-
-        def ve_bieu_do_chuan(df, danh_sach_cot, don_vi, min_y, max_y, bang_mau):
-            df_melt = df.melt(id_vars=["thoi_gian"], value_vars=danh_sach_cot, var_name="Thong_so", value_name="Gia_tri")
-            return (
-                alt.Chart(df_melt)
-                .mark_line(point=True, strokeWidth=2.5)
-                .encode(
-                    x=alt.X("thoi_gian:N", title="Thời gian", axis=alt.Axis(labelAngle=-45, labelLimit=80)),
-                    y=alt.Y("Gia_tri:Q", title=don_vi, scale=alt.Scale(domain=[min_y, max_y])),
-                    color=alt.Color("Thong_so:N", title="Thông số", scale=alt.Scale(range=bang_mau)),
-                    tooltip=["thoi_gian", "Thong_so", "Gia_tri"]
+                gio = datetime.now().strftime("%H:%M:%S")
+                trang_thai_text = "🔴 ĐANG LỖI" if dang_bi_loi else "🟢 AN TOÀN"
+                print(
+                    f"[{gio}] {trang_thai_text} (Ngưỡng: {NGUONG_TEMP1}°C/{NGUONG_CURRENT}A) | "
+                    f"T1: {temp1:.1f}°C | T2: {temp2:.1f}°C | "
+                    f"Spd: {speed:.1f} | Prs: {pressure:.2f} | Cur: {motor_current:.2f} A"
                 )
-                .properties(height=220)
-            )
 
-        r1_c1, r1_c2 = st.columns(2)
-        with r1_c1:
-            st.markdown("**🌡️ Biểu đồ Nhiệt độ (°C)**")
-            st.altair_chart(ve_bieu_do_chuan(df_bieu_do, ["temp1", "temp2"], "Nhiệt độ (°C)", 0, 150, ["#FF4B4B", "#FFA500"]), use_container_width=True)
-        with r1_c2:
-            st.markdown("**🔌 Biểu đồ Dòng điện Động cơ (A)**")
-            st.altair_chart(ve_bieu_do_chuan(df_bieu_do, ["motor_current"], "Dòng điện (A)", 0, 200, ["#00CC96"]), use_container_width=True)
+                dem_chu_ky += 1
+                if dem_chu_ky >= 1000:
+                    don_dep_du_lieu_cloud(so_ngay_giu_lai=7)
+                    dem_chu_ky = 0
 
-        r2_c1, r2_c2 = st.columns(2)
-        with r2_c1:
-            st.markdown("**⚡ Biểu đồ Tốc độ**")
-            st.altair_chart(ve_bieu_do_chuan(df_bieu_do, ["speed"], "Tốc độ", 0, 3000, ["#636EFA"]), use_container_width=True)
-        with r2_c2:
-            st.markdown("**⏲️ Biểu đồ Áp suất**")
-            st.altair_chart(ve_bieu_do_chuan(df_bieu_do, ["pressure"], "Áp suất", 0, 15, ["#AB63FA"]), use_container_width=True)
+            except Exception as e_read:
+                print(f"⚠️ Lỗi đọc/gửi dữ liệu: {e_read}")
 
-        # Nút gửi dữ liệu kèm bối cảnh sang Tab 2 cho AI phân tích
+            time.sleep(3)
+except Exception as e_conn:
+    print(f"❌ Không thể kết nối tới PLC: {e_conn}")
+finally:
+    if plc.get_connected():
+        plc.disconnect()
 
 
