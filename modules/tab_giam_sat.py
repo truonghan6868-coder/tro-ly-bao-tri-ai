@@ -3,6 +3,7 @@ from datetime import datetime
 import altair as alt
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from modules.tab_ban_giao import hien_thi_so_ban_giao_ca
 
 
 def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
@@ -91,7 +92,7 @@ def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
 
         st.divider()
 
-                # Vẽ 4 biểu đồ xu hướng 30 mẫu mới nhất
+        # Vẽ 4 biểu đồ xu hướng 30 mẫu mới nhất
         df_bieu_do = df_plc.head(30).iloc[::-1].copy()
 
         def ve_bieu_do_chuan(df, danh_sach_cot, don_vi, min_y, max_y, bang_mau):
@@ -124,7 +125,6 @@ def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
             st.markdown("**⏲️ Biểu đồ Áp suất**")
             st.altair_chart(ve_bieu_do_chuan(df_bieu_do, ["pressure"], "Áp suất", 0, 15, ["#AB63FA"]), use_container_width=True)
 
-
         # Nút gửi dữ liệu kèm bối cảnh sang Tab 2 cho AI phân tích
         if st.button("🤖 Gửi số liệu & Bối cảnh này sang Tab 2 để AI chẩn đoán", type="primary", use_container_width=True):
             du_lieu_tom_tat = df_plc.head(10).to_string(index=False)
@@ -143,3 +143,6 @@ def hien_thi_tab_giam_sat(df_plc, loi_ket_noi_plc, ham_luu_tin_nhan):
             st.rerun()
     else:
         st.warning(f"Đang chờ dữ liệu từ Supabase Cloud... ({loi_ket_noi_plc})")
+
+    st.divider()
+    hien_thi_so_ban_giao_ca()
