@@ -1,0 +1,9 @@
+streamlit
+google-genai
+python-dotenv
+pandas
+openpyxl
+python-docx
+pypdf
+streamlit-autorefresh
+supabase
