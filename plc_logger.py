@@ -25,6 +25,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 NGUONG_TEMP1 = float(os.getenv("NGUONG_TEMP1", 80.0))
 NGUONG_TEMP2 = float(os.getenv("NGUONG_TEMP2", 80.0))
 NGUONG_CURRENT = float(os.getenv("NGUONG_CURRENT", 65.0))
+VI_TRI_MAY_TRAM = os.getenv("VI_TRI_MAY_TRAM", "Cụm Lô ép (Press Roll - 75kW)")
 
 # Biến theo dõi trạng thái lỗi 2 chiều & chống spam
 dang_bi_loi = False
@@ -195,6 +196,26 @@ def don_dep_du_lieu_cloud(so_ngay_giu_lai=7):
         print(f"🧹 Đã tự động dọn dẹp dữ liệu Cloud cũ hơn {so_ngay_giu_lai} ngày.")
     except Exception as e_clean:
         print(f"⚠️ Lỗi khi dọn dẹp dữ liệu cũ: {e_clean}")
+def dong_bo_nguong_tu_cloud():
+    global NGUONG_TEMP1, NGUONG_TEMP2, NGUONG_CURRENT
+    try:
+        endpoint = f"{SUPABASE_URL}/rest/v1/cau_hinh_nguong"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Cache-Control": "no-cache"
+        }
+        params = {"vi_tri_may": f"eq.{VI_TRI_MAY_TRAM}", "select": "nguong_temp1,nguong_temp2,nguong_current"}
+        res = requests.get(endpoint, headers=headers, params=params, timeout=8)
+        res.raise_for_status()
+        du_lieu = res.json()
+        if du_lieu:
+            NGUONG_TEMP1 = float(du_lieu[0].get("nguong_temp1", NGUONG_TEMP1))
+            NGUONG_TEMP2 = float(du_lieu[0].get("nguong_temp2", NGUONG_TEMP2))
+            NGUONG_CURRENT = float(du_lieu[0].get("nguong_current", NGUONG_CURRENT))
+    except Exception:
+        pass
+
 
 # 3. Kết nối PLC và chạy vòng lặp đọc - ghi - cảnh báo 2 chiều
 khoi_tao_bang_plc()
@@ -210,6 +231,8 @@ try:
 
         while True:
             try:
+                if dem_chu_ky % 20 == 0:
+                    dong_bo_nguong_tu_cloud()
                 data = plc.db_read(DB_NUMBER, 0, 20)
                 temp1 = get_real(data, 0)
                 temp2 = get_real(data, 4)
