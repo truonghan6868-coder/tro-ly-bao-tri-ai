@@ -140,12 +140,13 @@ def tao_bien_ban_word_chuan_iso(thong_tin_ho_so, danh_sach_tin_nhan, tom_tat_ai=
     for i, h_text in enumerate(headers_ky):
         cell_h = bang_ky.cell(0, i)
         cell_h.text = h_text
-        cell_h.paragraphs.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cell_h.paragraphs.pop(0).alignment = WD_ALIGN_PARAGRAPH.CENTER
+
 
         cell_b = bang_ky.cell(1, i)
-        cell_b.text = "\n\n\n(Ký và ghi rõ họ tên)"
-        cell_b.paragraphs.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cell_b.paragraphs.pop(0).alignment = WD_ALIGN_PARAGRAPH.CENTER
 
+        
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
