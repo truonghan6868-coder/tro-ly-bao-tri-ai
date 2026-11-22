@@ -32,6 +32,7 @@ dang_bi_loi = False
 thoi_diem_bat_dau_loi = None
 thoi_diem_canh_bao_cuoi = 0
 THOI_GIAN_NGHI_CANH_BAO = 300  # Nhắc lại sau mỗi 5 phút nếu lỗi chưa khắc phục
+ngay_da_nhac_pm = ""
 
 
 # 2. Khởi tạo bảng lưu dự phòng cục bộ trong SQLite
@@ -226,6 +227,48 @@ def don_dep_du_lieu_cloud(so_ngay_giu_lai=7):
         print(f"🧹 Đã tự động dọn dẹp dữ liệu Cloud cũ hơn {so_ngay_giu_lai} ngày.")
     except Exception as e_clean:
         print(f"⚠️ Lỗi khi dọn dẹp dữ liệu cũ: {e_clean}")
+def kiem_tra_nhac_lich_bao_duong_pm():
+    global ngay_da_nhac_pm
+    hom_nay_str = datetime.now().strftime("%Y-%m-%d")
+    gio_phut = datetime.now().strftime("%H:%M")
+
+    # Chỉ gửi nhắc việc 1 lần duy nhất mỗi ngày vào khung 07:30 sáng (đầu Ca Ngày)
+    if gio_phut != "07:30" or ngay_da_nhac_pm == hom_nay_str:
+        return
+
+    try:
+        endpoint = f"{SUPABASE_URL}/rest/v1/lich_bao_duong_pm?select=*"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Cache-Control": "no-cache"
+        }
+        res = requests.get(endpoint, headers=headers, timeout=10)
+        res.raise_for_status()
+        ds_pm = res.json()
+
+        hom_nay_date = datetime.now().date()
+        danh_sach_can_nhac = []
+
+        for item in ds_pm:
+            ngay_han = datetime.strptime(item["ngay_den_han"], "%Y-%m-%d").date()
+            so_ngay = (ngay_han - hom_nay_date).days
+            if so_ngay < 0:
+                danh_sach_can_nhac.append(f"🔴 <b>QUÁ HẠN {abs(so_ngay)} NGÀY:</b> {item['hang_muc']} ({item['cum_thiet_bi']}) — Phụ trách: {item['nguoi_phu_trach']}")
+            elif so_ngay <= 3:
+                danh_sach_can_nhac.append(f"🟡 <b>SẮP ĐẾN HẠN (Còn {so_ngay} ngày):</b> {item['hang_muc']} ({item['cum_thiet_bi']}) — Hạn: {item['ngay_den_han']}")
+
+        if danh_sach_can_nhac:
+            noi_dung_nhac = (
+                f"🗓️ <b>NHẮC VIỆC BẢO DƯỠNG ĐỊNH KỲ (PM / CIL) - {hom_nay_str}</b>\n\n"
+                + "\n".join(danh_sach_can_nhac)
+                + "\n\n👉 Sau khi thực hiện xong, vui lòng vào <b>Tab 3</b> trên Web bấm <b>'✅ Đã hoàn thành'</b> để hệ thống tính chu kỳ tiếp theo."
+            )
+            gui_tin_nhan_telegram(noi_dung_nhac, "Nhắc lịch bảo dưỡng PM")
+
+        ngay_da_nhac_pm = hom_nay_str
+    except Exception as e_pm:
+        print(f"⚠️ Lỗi kiểm tra lịch PM: {e_pm}")
 
 
 # 3. Kết nối PLC và chạy vòng lặp đọc - ghi - cảnh báo 2 chiều
@@ -245,6 +288,7 @@ try:
                 # Đồng bộ lại ngưỡng cảnh báo từ Supabase mỗi 60 giây (20 chu kỳ x 3s)
                 if dem_chu_ky % 20 == 0:
                     dong_bo_nguong_tu_cloud()
+                    kiem_tra_nhac_lich_bao_duong_pm()
 
                 data = plc.db_read(DB_NUMBER, 0, 20)
                 temp1 = get_real(data, 0)

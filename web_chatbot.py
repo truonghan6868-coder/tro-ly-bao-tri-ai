@@ -16,11 +16,15 @@ from modules.quan_ly_ho_so import (
 )
 from modules.tab_bao_cao import hien_thi_tab_bao_cao
 from modules.tab_giam_sat import hien_thi_tab_giam_sat
+from modules.bao_tri_nang_cao import (
+    chan_doan_offline_du_phong,
+    hien_thi_kho_tai_lieu_dung_chung,
+    hien_thi_lich_bao_duong_pm,
+)
 
 load_dotenv()
 client = genai.Client()
 
-#DANH_SACH_MODEL = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
 DANH_SACH_MODEL = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash"]
 
 st.set_page_config(page_title="Hệ thống AI Bảo trì Tự chủ", page_icon="🏭", layout="wide")
@@ -80,9 +84,7 @@ def doc_noi_dung_pdf(uploaded_file):
 
 # --- THANH BÊN (SIDEBAR): QUẢN LÝ HỒ SƠ CLOUD & TÀI LIỆU ---
 with st.sidebar:
-    #ho_so_hien_tai_id, danh_sach_tin_nhan = hien_thi_sidebar_ho_so_cloud(client, "gemini-2.5-flash-lite")
     ho_so_hien_tai_id, danh_sach_tin_nhan = hien_thi_sidebar_ho_so_cloud(client, "gemini-3.5-flash-lite")
-
     st.session_state.phien_hien_tai = ho_so_hien_tai_id
 
     st.divider()
@@ -123,9 +125,9 @@ with st.sidebar:
     )
 
     st.divider()
-    st.subheader("📎 Nạp Tài liệu & Nhật ký")
+    st.subheader("📎 Nạp Nhanh Tài liệu Tạm Thời")
     uploaded_files = st.file_uploader(
-        "Chọn nhiều file PDF, Excel (.xlsx) hoặc CSV:",
+        "Chọn file PDF, Excel (.xlsx) hoặc CSV (chỉ dùng cho phiên này):",
         type=["pdf", "xlsx", "xls", "csv"],
         accept_multiple_files=True,
     )
@@ -160,7 +162,7 @@ except Exception as e_plc:
 tab_giam_sat, tab_ai_chat, tab_thong_ke = st.tabs([
     "📡 1. Bảng Điện Tử & Vận Hành Ca",
     "🤖 2. Trợ Lý AI & Chẩn Đoán",
-    "📊 3. Thống Kê & Báo Cáo Excel",
+    "📊 3. Thống Kê, Lịch PM & Báo Cáo",
 ])
 
 with tab_giam_sat:
@@ -168,9 +170,15 @@ with tab_giam_sat:
 
 with tab_thong_ke:
     hien_thi_tab_bao_cao(df_plc)
+    st.divider()
+    hien_thi_lich_bao_duong_pm()
 
 with tab_ai_chat:
-    # --- KHU VỰC TRỰC QUAN HÓA DỮ LIỆU EXCEL ---
+    # --- 1. KHO TÀI LIỆU KỸ THUẬT DÙNG CHUNG (CLOUD MANUAL LIBRARY) ---
+    noi_dung_thu_vien_chung = hien_thi_kho_tai_lieu_dung_chung()
+    st.divider()
+
+    # --- 2. KHU VỰC TRỰC QUAN HÓA DỮ LIỆU EXCEL ---
     if uploaded_files:
         cac_file_excel = [f for f in uploaded_files if f.name.lower().endswith((".xlsx", ".xls", ".csv"))]
         if cac_file_excel:
@@ -197,7 +205,7 @@ with tab_ai_chat:
                 except Exception as e:
                     st.warning(f"Không thể vẽ biểu đồ từ cột đã chọn: {e}")
 
-    # --- HIỂN THỊ LỊCH SỬ HỘI THOẠI TỪ SUPABASE CLOUD ---
+    # --- 3. HIỂN THỊ LỊCH SỬ HỘI THOẠI TỪ SUPABASE CLOUD ---
     for tin in danh_sach_tin_nhan:
         role = tin.get("vai_tro", "assistant")
         content = tin.get("noi_dung", "")
@@ -206,7 +214,14 @@ with tab_ai_chat:
         with st.chat_message(role):
             st.markdown(content)
             if role == "assistant":
-                info_tam = {"id": ho_so_hien_tai_id, "ten_ho_so": f"Hồ sơ #{ho_so_hien_tai_id}", "cum_thiet_bi": "Dây chuyền Máy Xeo", "trang_thai": "Đang theo dõi", "nguoi_phu_trach": "Tổ Bảo Trì", "ngay_tao": ""}
+                info_tam = {
+                    "id": ho_so_hien_tai_id,
+                    "ten_ho_so": f"Hồ sơ #{ho_so_hien_tai_id}",
+                    "cum_thiet_bi": "Dây chuyền Máy Xeo",
+                    "trang_thai": "Đang theo dõi",
+                    "nguoi_phu_trach": "Tổ Bảo Trì",
+                    "ngay_tao": "",
+                }
                 single_word = tao_bien_ban_word_chuan_iso(info_tam, [tin])
                 st.download_button(
                     label="📄 Xuất phương án này ra biểu mẫu Word (.docx)",
@@ -216,8 +231,10 @@ with tab_ai_chat:
                     key=f"word_btn_{msg_id}",
                 )
 
+    
+
     prompt_tu_plc = st.session_state.pop("tu_dong_hoi_plc", None)
-    prompt_nhap_tay = st.chat_input("Nhập yêu cầu (VD: Lập bảng kiểm tra CIL hằng ngày cho cụm lô ép, hoặc phân tích lỗi từ file đính kèm)...")
+    prompt_nhap_tay = st.chat_input("Nhập yêu cầu (VD: Tra cứu mã lỗi biến tần ABB trong kho tài liệu, hoặc lập bảng kiểm tra CIL)...")
 
     if prompt := (prompt_tu_plc or prompt_nhap_tay):
         if not prompt_tu_plc and ho_so_hien_tai_id:
@@ -241,16 +258,15 @@ with tab_ai_chat:
                 ngu_canh_cu = "\n".join([f"{t.get('vai_tro')}: {t.get('noi_dung')}" for t in danh_sach_tin_nhan[-6:]])
                 cau_hoi_day_du = f"Lịch sử trao đổi gần đây:\n{ngu_canh_cu}\n\n"
                 if du_lieu_tai_lieu_gop:
-                    cau_hoi_day_du += "Tài liệu kỹ thuật & Số liệu đính kèm:\n" + "\n".join(du_lieu_tai_lieu_gop) + "\n\n"
+                    cau_hoi_day_du += "Tài liệu kỹ thuật & Số liệu đính kèm tạm thời:\n" + "\n".join(du_lieu_tai_lieu_gop) + "\n\n"
+                if noi_dung_thu_vien_chung:
+                    cau_hoi_day_du += "Tài liệu tra cứu từ Kho Dùng Chung:\n" + noi_dung_thu_vien_chung + "\n\n"
                 cau_hoi_day_du += f"Yêu cầu hiện tại: {prompt}"
 
                 noi_dung_gui.append(cau_hoi_day_du)
 
                 cau_tra_loi = ""
-                danh_sach_loi = []
-                thoi_gian_cho = [2, 4, 6]
-
-                for lan_thu, ten_model in enumerate(DANH_SACH_MODEL):
+                for ten_model in DANH_SACH_MODEL:
                     try:
                         response = client.models.generate_content(
                             model=ten_model,
@@ -262,15 +278,15 @@ with tab_ai_chat:
                         )
                         cau_tra_loi = response.text
                         break
-                    except Exception as e:
-                        danh_sach_loi.append(f"- **Lần {lan_thu + 1} ({ten_model})**: {e}")
-                        time.sleep(thoi_gian_cho[lan_thu])
+                    except Exception:
+                        time.sleep(2)
                         continue
 
+                # Tự động kích hoạt Chẩn đoán Offline Dự phòng nếu AI trực tuyến gián đoạn
                 if not cau_tra_loi:
-                    chi_tiet = "\n".join(danh_sach_loi)
-                    cau_tra_loi = f"⚠️ Máy chủ Google đang cao điểm. Chi tiết các lần thử:\n{chi_tiet}"
+                    cau_tra_loi = chan_doan_offline_du_phong(prompt, df_plc)
 
                 if ho_so_hien_tai_id:
                     luu_tin_nhan_cloud(ho_so_hien_tai_id, "assistant", cau_tra_loi)
                 st.rerun()
+       
