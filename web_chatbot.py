@@ -20,7 +20,8 @@ from modules.tab_giam_sat import hien_thi_tab_giam_sat
 load_dotenv()
 client = genai.Client()
 
-DANH_SACH_MODEL = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+#DANH_SACH_MODEL = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+DANH_SACH_MODEL = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash"]
 
 st.set_page_config(page_title="Hệ thống AI Bảo trì Tự chủ", page_icon="🏭", layout="wide")
 
@@ -79,7 +80,9 @@ def doc_noi_dung_pdf(uploaded_file):
 
 # --- THANH BÊN (SIDEBAR): QUẢN LÝ HỒ SƠ CLOUD & TÀI LIỆU ---
 with st.sidebar:
-    ho_so_hien_tai_id, danh_sach_tin_nhan = hien_thi_sidebar_ho_so_cloud(client, "gemini-2.5-flash-lite")
+    #ho_so_hien_tai_id, danh_sach_tin_nhan = hien_thi_sidebar_ho_so_cloud(client, "gemini-2.5-flash-lite")
+    ho_so_hien_tai_id, danh_sach_tin_nhan = hien_thi_sidebar_ho_so_cloud(client, "gemini-3.5-flash-lite")
+
     st.session_state.phien_hien_tai = ho_so_hien_tai_id
 
     st.divider()
