@@ -9,7 +9,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from modules.tab_ban_giao import hien_thi_so_ban_giao_ca
 
-
+@st.cache_data(ttl=10, show_spinner=False)
 def tai_toan_bo_cau_hinh():
     """Tải danh sách toàn bộ các điểm đo / biến tần từ Supabase."""
     mac_dinh = [{
@@ -82,8 +82,9 @@ def luu_bang_cau_hinh_da_diem(df_da_sua, nguoi_sua):
         res = requests.post(endpoint, json=danh_sach_gui, headers=headers, timeout=12)
         res.raise_for_status()
 
-
+@st.cache_data(ttl=5, show_spinner=False)
 def tai_du_lieu_theo_vi_tri(vi_tri_may, limit=50):
+
     """Lấy dữ liệu đo mới nhất của riêng vị trí máy đang chọn."""
     try:
         url_du_an = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
@@ -205,8 +206,10 @@ def hien_thi_tab_giam_sat(df_plc_chung, loi_ket_noi_plc, ham_luu_tin_nhan):
                 if not nguoi_sua_bang.strip():
                     st.warning("⚠️ Vui lòng nhập tên người cập nhật trước khi lưu!")
                 else:
+
                     try:
                         luu_bang_cau_hinh_da_diem(df_editor, nguoi_sua_bang.strip())
+                        st.cache_data.clear()
                         st.success("✅ Đã cập nhật toàn bộ danh sách vị trí & ngưỡng lên Supabase Cloud!")
                         st.rerun()
                     except Exception as e_bulk:

@@ -21,6 +21,7 @@ def _lay_cau_hinh_supabase():
 # =====================================================================
 # 1. KHO TÀI LIỆU KỸ THUẬT DÙNG CHUNG (MANUAL LIBRARY)
 # =====================================================================
+@st.cache_data(ttl=15, show_spinner=False)
 def tai_danh_sach_tai_lieu_cloud():
     url_du_an, headers = _lay_cau_hinh_supabase()
     endpoint = f"{url_du_an}/rest/v1/thu_vien_tai_lieu?select=*&order=id.desc"
@@ -68,11 +69,34 @@ def luu_tai_lieu_len_thu_vien(uploaded_file, nguoi_tai="Tổ Bảo Trì"):
 
 
 def xoa_tai_lieu_thu_vien(doc_id):
+    st.cache_data.clear()
     url_du_an, headers = _lay_cau_hinh_supabase()
     endpoint = f"{url_du_an}/rest/v1/thu_vien_tai_lieu?id=eq.{doc_id}"
     res = requests.delete(endpoint, headers=headers, timeout=10)
     res.raise_for_status()
 
+def trich_loc_doan_tai_lieu_lien_quan(noi_dung_goc, tu_khoa_cau_hoi="", gioi_han_ky_tu=12000):
+    if not noi_dung_goc:
+        return ""
+    if len(noi_dung_goc) <= gioi_han_ky_tu or not tu_khoa_cau_hoi.strip():
+        return noi_dung_goc[:gioi_han_ky_tu]
+
+    cac_tu_khoa = [w.lower() for w in tu_khoa_cau_hoi.split() if len(w) >= 2]
+    cac_doan = noi_dung_goc.split("\n\n")
+    doan_chon = []
+    tong_ky_tu = 0
+
+    for doan in cac_doan:
+        doan_lower = doan.lower()
+        if any(kw in doan_lower for kw in cac_tu_khoa):
+            doan_chon.append(doan)
+            tong_ky_tu += len(doan)
+            if tong_ky_tu >= gioi_han_ky_tu:
+                break
+
+    if not doan_chon:
+        return noi_dung_goc[:gioi_han_ky_tu]
+    return "\n\n".join(doan_chon)
 
 def hien_thi_kho_tai_lieu_dung_chung():
     st.subheader("📚 Kho Tài Liệu Kỹ Thuật Dùng Chung (Cloud Manual)")
@@ -87,6 +111,7 @@ def hien_thi_kho_tai_lieu_dung_chung():
                     with st.spinner("Đang trích xuất nội dung và lưu lên Cloud..."):
                         try:
                             luu_tai_lieu_len_thu_vien(file_moi, nguoi_gui)
+                            st.cache_data.clear()
                             st.success(f"✅ Đã lưu '{file_moi.name}' vào Kho Dùng Chung!")
                             st.rerun()
                         except Exception as e:
