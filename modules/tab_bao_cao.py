@@ -16,7 +16,6 @@ def truy_xuat_du_lieu_lich_su(tu_thoi_diem, den_thoi_diem):
         "Authorization": f"Bearer {key_du_an}",
         "Cache-Control": "no-cache"
     }
-    # Dùng danh sách tuple để truyền đồng thời điều kiện >= và <= cho cột thoi_gian
     params = [
         ("select", "thoi_gian,temp1,temp2,speed,pressure,motor_current"),
         ("thoi_gian", f"gte.{tu_thoi_diem}"),
@@ -32,64 +31,71 @@ def truy_xuat_du_lieu_lich_su(tu_thoi_diem, den_thoi_diem):
 def hien_thi_tab_bao_cao(df_plc_mac_dinh):
     st.subheader("📊 Truy Xuất Lịch Sử Ca & Xuất Báo Cáo ISO")
 
+    # Tự động nhận diện Ca Ngày / Ca Đêm và ngày bắt đầu ca theo đồng hồ thực tế
+    bay_gio = datetime.now()
+    gio_hien_tai = bay_gio.hour
+    if 7 <= gio_hien_tai < 19:
+        ca_mac_dinh_idx = 0
+        ngay_mac_dinh = bay_gio.date()
+    else:
+        ca_mac_dinh_idx = 1
+        # Nếu đang từ 00:00 đến 06:59 sáng thì ca đêm thuộc về ngày hôm qua
+        ngay_mac_dinh = bay_gio.date() if gio_hien_tai >= 19 else (bay_gio.date() - timedelta(days=1))
+
     # 1. Khu vực bộ lọc tra cứu dữ liệu quá khứ trên Supabase
     with st.container(border=True):
-        st.markdown("**🔍 Bộ lọc dữ liệu vận hành theo Ca trực & Ngày:**")
-        f1, f2, f3, f4 = st.columns([1.2, 1.5, 1.3, 1.2])
+        st.markdown("**🔍 Bộ lọc dữ liệu vận hành theo Ca trực & Ngày (Tự động chọn đúng ca hiện tại):**")
+        f1, f2, f3, f4 = st.columns([1.2, 1.6, 1.2, 1.1])
         with f1:
-            ngay_chon = st.date_input("📅 Chọn ngày", value=datetime.now().date())
+            ngay_chon = st.date_input("📅 Chọn ngày bắt đầu ca", value=ngay_mac_dinh)
         with f2:
             ca_chon = st.selectbox("🕒 Chọn khung ca", [
                 "☀️ Ca Ngày (07:00 - 19:00)",
                 "🌙 Ca Đêm (19:00 - 07:00 hôm sau)",
                 "📆 Cả ngày (00:00 - 23:59)",
-                "⚡ 50 mẫu mới nhất (Mặc định)"
-            ])
+                "⚡ 50 mẫu mới nhất (Tức thời)"
+            ], index=ca_mac_dinh_idx)
         with f3:
             nguoi_lap = st.text_input("👷 Người lập báo cáo", value="Kỹ thuật Điện - TĐH")
         with f4:
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            nut_loc = st.button("🔎 Truy xuất dữ liệu", type="primary", use_container_width=True)
+            st.button("🔄 Tải lại ca", type="primary", use_container_width=True)
 
-    # Xác định dữ liệu hiển thị (Lọc theo ca hoặc dùng 50 mẫu mới nhất)
+    # Tự động truy xuất dữ liệu ngay khi vào Tab 3
     df_bao_cao = pd.DataFrame()
     khoang_thoi_gian_str = "50 mẫu gần nhất"
 
-    if ca_chon == "⚡ 50 mẫu mới nhất (Mặc định)" and not nut_loc:
-        df_bao_cao = df_plc_mac_dinh.iloc[::-1].copy() if not df_plc_mac_dinh.empty else pd.DataFrame()
+    ngay_str = ngay_chon.strftime("%Y-%m-%d")
+    if "Ca Ngày" in ca_chon:
+        tu_luc = f"{ngay_str} 07:00:00"
+        den_luc = f"{ngay_str} 19:00:00"
+    elif "Ca Đêm" in ca_chon:
+        ngay_hom_sau = (ngay_chon + timedelta(days=1)).strftime("%Y-%m-%d")
+        tu_luc = f"{ngay_str} 19:00:00"
+        den_luc = f"{ngay_hom_sau} 07:00:00"
+    elif "Cả ngày" in ca_chon:
+        tu_luc = f"{ngay_str} 00:00:00"
+        den_luc = f"{ngay_str} 23:59:59"
     else:
-        ngay_str = ngay_chon.strftime("%Y-%m-%d")
-        if "Ca Ngày" in ca_chon:
-            tu_luc = f"{ngay_str} 07:00:00"
-            den_luc = f"{ngay_str} 19:00:00"
-        elif "Ca Đêm" in ca_chon:
-            ngay_hom_sau = (ngay_chon + timedelta(days=1)).strftime("%Y-%m-%d")
-            tu_luc = f"{ngay_str} 19:00:00"
-            den_luc = f"{ngay_hom_sau} 07:00:00"
-        elif "Cả ngày" in ca_chon:
-            tu_luc = f"{ngay_str} 00:00:00"
-            den_luc = f"{ngay_str} 23:59:59"
-        else:
-            tu_luc, den_luc = None, None
+        tu_luc, den_luc = None, None
 
-        if tu_luc and den_luc:
-            khoang_thoi_gian_str = f"{tu_luc} đến {den_luc}"
-            try:
-                with st.spinner("Đang tải dữ liệu lịch sử từ Supabase Cloud..."):
-                    df_bao_cao = truy_xuat_du_lieu_lich_su(tu_luc, den_luc)
-            except Exception as e_loc:
-                st.error(f"Lỗi truy xuất lịch sử Supabase: {e_loc}")
-        else:
-            df_bao_cao = df_plc_mac_dinh.iloc[::-1].copy() if not df_plc_mac_dinh.empty else pd.DataFrame()
+    if tu_luc and den_luc:
+        khoang_thoi_gian_str = f"{tu_luc} đến {den_luc}"
+        try:
+            df_bao_cao = truy_xuat_du_lieu_lich_su(tu_luc, den_luc)
+        except Exception as e_loc:
+            st.error(f"Lỗi truy xuất lịch sử Supabase: {e_loc}")
+    else:
+        df_bao_cao = df_plc_mac_dinh.iloc[::-1].copy() if not df_plc_mac_dinh.empty else pd.DataFrame()
 
     # 2. Hiển thị chỉ số KPI và Bảng thống kê
     if not df_bao_cao.empty:
-        st.caption(f"📌 Đang hiển thị **{len(df_bao_cao)}** bản ghi dữ liệu ({khoang_thoi_gian_str})")
+        st.caption(f"📌 Đang hiển thị **{len(df_bao_cao)}** bản ghi dữ liệu (`{khoang_thoi_gian_str}`)")
 
         NG_T1 = float(os.getenv("NGUONG_TEMP1", 80.0))
         NG_T2 = float(os.getenv("NGUONG_TEMP2", 80.0))
         NG_CUR = float(os.getenv("NGUONG_CURRENT", 65.0))
-        dong_dinh_muc = 135.0  # Động cơ 75kW
+        dong_dinh_muc = 135.0
 
         tai_trung_binh = (df_bao_cao['motor_current'].mean() / dong_dinh_muc) * 100
         so_lan_qua_nhiet = int(((df_bao_cao['temp1'] > NG_T1) | (df_bao_cao['temp2'] > NG_T2)).sum())
@@ -158,5 +164,6 @@ def hien_thi_tab_bao_cao(df_plc_mac_dinh):
         with st.expander("📋 Xem toàn bộ dữ liệu chi tiết trong ca"):
             st.dataframe(df_bao_cao, use_container_width=True, hide_index=True)
     else:
-        st.info("Không tìm thấy bản ghi dữ liệu nào trong khoảng thời gian đã chọn. Hãy thử chọn ngày khác hoặc kiểm tra kết nối Supabase.")
+        st.info(f"Không tìm thấy bản ghi dữ liệu nào trong khung `{khoang_thoi_gian_str}`. Hãy chọn ngày khác hoặc chọn '⚡ 50 mẫu mới nhất (Tức thời)'.")
+
 

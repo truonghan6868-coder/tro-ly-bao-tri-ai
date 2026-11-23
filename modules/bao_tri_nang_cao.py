@@ -51,7 +51,6 @@ def luu_tai_lieu_len_thu_vien(uploaded_file, nguoi_tai="Tổ Bảo Trì"):
         for sheet, df in excel_data.items():
             noi_dung_list.append(f"[Sheet: {sheet}]\n{df.to_string(index=False)}")
 
-    # Giới hạn 60.000 ký tự đầu tiên để tối ưu tốc độ Cloud và token AI
     noi_dung_gop = "\n".join(noi_dung_list)[:60000]
 
     url_du_an, headers = _lay_cau_hinh_supabase()
@@ -188,9 +187,57 @@ def tai_lich_bao_duong_pm():
     return res.json()
 
 
+def gui_nhac_viec_pm_telegram_thu_cong(ds_pm):
+    """Gửi ngay danh sách công việc bảo dưỡng định kỳ lên Telegram khi trưởng bộ phận bấm nút."""
+    tg_token = os.getenv("TELEGRAM_TOKEN") or st.secrets.get("TELEGRAM_TOKEN", "")
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID", "")
+    if not tg_token or not tg_chat_id:
+        return False, "Chưa cấu hình TELEGRAM_TOKEN hoặc TELEGRAM_CHAT_ID."
+
+    hom_nay = datetime.now().date()
+    dong_tin = [f"🗓️ <b>DANH SÁCH KIỂM TRA & BẢO DƯỠNG (PM / CIL) - {hom_nay.strftime('%d/%m/%Y')}</b>\n"]
+    for item in ds_pm:
+        ngay_han = datetime.strptime(item["ngay_den_han"], "%Y-%m-%d").date()
+        so_ngay = (ngay_han - hom_nay).days
+        if so_ngay < 0:
+            tt = f"🔴 QUÁ HẠN {abs(so_ngay)} ngày"
+        elif so_ngay <= 3:
+            tt = f"🟡 SẮP ĐẾN HẠN (Còn {so_ngay} ngày)"
+        else:
+            tt = f"🟢 Còn {so_ngay} ngày (Hạn: {item['ngay_den_han']})"
+        dong_tin.append(f"• <b>{item['hang_muc']}</b> [{item['cum_thiet_bi']}] — {tt} (Phụ trách: {item['nguoi_phu_trach']})")
+
+    dong_tin.append("\n👉 Anh em bảo trì thực hiện xong nhớ vào <b>Tab 3</b> trên Web bấm <b>'✅ Đã hoàn thành'</b> nhé!")
+    url_tg = "https://" + "api.telegram.org/bot" + f"{tg_token}/sendMessage"
+    res = requests.post(url_tg, json={"chat_id": tg_chat_id, "text": "\n".join(dong_tin), "parse_mode": "HTML"}, timeout=10)
+    res.raise_for_status()
+    return True, "Đã gửi danh sách nhắc việc lên Telegram thành công!"
+
+
 def hien_thi_lich_bao_duong_pm():
-    st.subheader("🗓️ Lịch Bảo Dưỡng Định Kỳ (PM / CIL)")
-    st.caption("Hệ thống tự động tính ngày đến hạn tiếp theo và nhắc việc qua Telegram lúc 07:30 sáng hằng ngày.")
+    col_tieu_de, col_nut_tg = st.columns([3, 1.3])
+    with col_tieu_de:
+        st.subheader("🗓️ Lịch Bảo Dưỡng Định Kỳ (PM / CIL)")
+        st.caption("Tự động tính ngày đến hạn tiếp theo và nhắc việc qua Telegram lúc 07:30 sáng hằng ngày.")
+
+    try:
+        ds_pm = tai_lich_bao_duong_pm()
+    except Exception as e_pm:
+        st.warning(f"Không thể tải lịch bảo dưỡng PM: {e_pm}")
+        return
+
+    with col_nut_tg:
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        if st.button("📲 Gửi nhắc việc Telegram ngay", use_container_width=True, disabled=not bool(ds_pm)):
+            try:
+                ok, msg = gui_nhac_viec_pm_telegram_thu_cong(ds_pm)
+                if ok:
+                    st.toast(f"✅ {msg}")
+                    st.success(msg)
+                else:
+                    st.warning(msg)
+            except Exception as e_tg:
+                st.error(f"Lỗi gửi Telegram: {e_tg}")
 
     with st.expander("➕ Thêm Hạng Mục Bảo Dưỡng Định Kỳ Mới", expanded=False):
         with st.form("form_them_pm", clear_on_submit=True):
@@ -235,46 +282,52 @@ def hien_thi_lich_bao_duong_pm():
                 else:
                     st.warning("Vui lòng nhập tên hạng mục bảo dưỡng!")
 
-    try:
-        ds_pm = tai_lich_bao_duong_pm()
-        if ds_pm:
-            hom_nay = datetime.now().date()
-            for item in ds_pm:
-                ngay_han = datetime.strptime(item["ngay_den_han"], "%Y-%m-%d").date()
-                so_ngay_con_lai = (ngay_han - hom_nay).days
+    if ds_pm:
+        hom_nay = datetime.now().date()
+        for item in ds_pm:
+            ngay_han = datetime.strptime(item["ngay_den_han"], "%Y-%m-%d").date()
+            so_ngay_con_lai = (ngay_han - hom_nay).days
 
-                if so_ngay_con_lai < 0:
-                    badge = f"🔴 QUÁ HẠN {abs(so_ngay_con_lai)} NGÀY"
-                elif so_ngay_con_lai <= 3:
-                    badge = f"🟡 SẮP ĐẾN HẠN (Còn {so_ngay_con_lai} ngày)"
-                else:
-                    badge = f"🟢 Còn {so_ngay_con_lai} ngày"
+            if so_ngay_con_lai < 0:
+                badge = f"🔴 QUÁ HẠN {abs(so_ngay_con_lai)} NGÀY"
+            elif so_ngay_con_lai <= 3:
+                badge = f"🟡 SẮP ĐẾN HẠN (Còn {so_ngay_con_lai} ngày)"
+            else:
+                badge = f"🟢 Còn {so_ngay_con_lai} ngày"
 
-                with st.container(border=True):
-                    col_info, col_btn = st.columns([3.5, 1.2])
-                    with col_info:
-                        st.markdown(f"**{badge} | {item['hang_muc']}** (`{item['cum_thiet_bi']}`)")
-                        st.caption(
-                            f"Chu kỳ: **{item['chu_ky_ngay']} ngày** | Làm gần nhất: `{item['ngay_thuc_hien_cuoi']}` | "
-                            f"Hạn tiếp theo: **`{item['ngay_den_han']}`** | Phụ trách: **{item['nguoi_phu_trach']}** | Ghi chú: {item['ghi_chu']}"
-                        )
-                    with col_btn:
-                        if st.button("✅ Đã hoàn thành", key=f"done_pm_{item['id']}", use_container_width=True):
-                            url_du_an, headers = _lay_cau_hinh_supabase()
-                            ngay_moi = hom_nay + timedelta(days=int(item["chu_ky_ngay"]))
-                            payload_update = {
-                                "ngay_thuc_hien_cuoi": hom_nay.strftime("%Y-%m-%d"),
-                                "ngay_den_han": ngay_moi.strftime("%Y-%m-%d"),
-                            }
-                            requests.patch(
-                                f"{url_du_an}/rest/v1/lich_bao_duong_pm?id=eq.{item['id']}",
-                                json=payload_update,
-                                headers=headers,
-                                timeout=10,
-                            ).raise_for_status()
-                            st.toast(f"Đã cập nhật lịch tiếp theo: {ngay_moi.strftime('%Y-%m-%d')}")
-                            st.rerun()
-        else:
-            st.info("Chưa có hạng mục bảo dưỡng định kỳ nào.")
-    except Exception as e_pm:
-        st.warning(f"Không thể tải lịch bảo dưỡng PM: {e_pm}")
+            with st.container(border=True):
+                col_info, col_done, col_del = st.columns([3.3, 1.1, 0.5])
+                with col_info:
+                    st.markdown(f"**{badge} | {item['hang_muc']}** (`{item['cum_thiet_bi']}`)")
+                    st.caption(
+                        f"Chu kỳ: **{item['chu_ky_ngay']} ngày** | Làm gần nhất: `{item['ngay_thuc_hien_cuoi']}` | "
+                        f"Hạn tiếp theo: **`{item['ngay_den_han']}`** | Phụ trách: **{item['nguoi_phu_trach']}** | Ghi chú: {item['ghi_chu']}"
+                    )
+                with col_done:
+                    if st.button("✅ Hoàn thành", key=f"done_pm_{item['id']}", use_container_width=True):
+                        url_du_an, headers = _lay_cau_hinh_supabase()
+                        ngay_moi = hom_nay + timedelta(days=int(item["chu_ky_ngay"]))
+                        payload_update = {
+                            "ngay_thuc_hien_cuoi": hom_nay.strftime("%Y-%m-%d"),
+                            "ngay_den_han": ngay_moi.strftime("%Y-%m-%d"),
+                        }
+                        requests.patch(
+                            f"{url_du_an}/rest/v1/lich_bao_duong_pm?id=eq.{item['id']}",
+                            json=payload_update,
+                            headers=headers,
+                            timeout=10,
+                        ).raise_for_status()
+                        st.toast(f"Đã cập nhật lịch tiếp theo: {ngay_moi.strftime('%Y-%m-%d')}")
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑️", key=f"del_pm_{item['id']}", help="Xóa hạng mục này", use_container_width=True):
+                        url_du_an, headers = _lay_cau_hinh_supabase()
+                        requests.delete(
+                            f"{url_du_an}/rest/v1/lich_bao_duong_pm?id=eq.{item['id']}",
+                            headers=headers,
+                            timeout=10,
+                        ).raise_for_status()
+                        st.toast("Đã xóa hạng mục bảo dưỡng!")
+                        st.rerun()
+    else:
+        st.info("Chưa có hạng mục bảo dưỡng định kỳ nào.")
