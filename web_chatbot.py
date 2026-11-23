@@ -19,7 +19,7 @@ from modules.tab_giam_sat import hien_thi_tab_giam_sat
 from modules.bao_tri_nang_cao import (
     chan_doan_offline_du_phong,
     hien_thi_kho_tai_lieu_dung_chung,
-    hien_thi_lich_bao_duong_pm,
+    hien_thi_lich_bao_duong_pm,trich_loc_doan_tai_lieu_lien_quan,
 )
 
 load_dotenv()
@@ -260,7 +260,9 @@ with tab_ai_chat:
                 if du_lieu_tai_lieu_gop:
                     cau_hoi_day_du += "Tài liệu kỹ thuật & Số liệu đính kèm tạm thời:\n" + "\n".join(du_lieu_tai_lieu_gop) + "\n\n"
                 if noi_dung_thu_vien_chung:
-                    cau_hoi_day_du += "Tài liệu tra cứu từ Kho Dùng Chung:\n" + noi_dung_thu_vien_chung + "\n\n"
+                    noi_dung_loc = trich_loc_doan_tai_lieu_lien_quan(noi_dung_thu_vien_chung, prompt)
+                    cau_hoi_day_du += "Tài liệu tra cứu từ Kho Dùng Chung:\n" + noi_dung_loc + "\n\n"
+
                 cau_hoi_day_du += f"Yêu cầu hiện tại: {prompt}"
 
                 noi_dung_gui.append(cau_hoi_day_du)

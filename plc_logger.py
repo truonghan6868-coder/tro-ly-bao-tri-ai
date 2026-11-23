@@ -7,6 +7,7 @@ import requests
 import snap7
 from snap7.util import get_real
 
+
 # 1. Nạp cấu hình từ file .env
 load_dotenv()
 PLC_IP = os.getenv("PLC_IP", "192.168.0.1")
@@ -176,12 +177,17 @@ def kiem_tra_canh_bao_hai_chieu(temp1, temp2, speed, pressure, current):
             )
             gui_tin_nhan_telegram(tin_nhan_xanh, "AN TOÀN TRỞ LẠI")
 
+# Thêm 2 biến theo dõi này ở đầu tệp (dưới dòng ngay_da_nhac_pm = "")
+thoi_diem_day_cloud_cuoi = 0
+CHU_KY_DAY_CLOUD = 20  # Đẩy lên Supabase mỗi 20 giây nếu thông số ổn định
+gia_tri_cloud_cuoi = {"temp1": 0.0, "temp2": 0.0, "current": 0.0}
 
 def luu_va_day_du_lieu(temp1, temp2, speed, pressure, current):
+    global thoi_diem_day_cloud_cuoi, gia_tri_cloud_cuoi
     thoi_gian = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     t1, t2, sp, pr, cur = round(temp1, 2), round(temp2, 2), round(speed, 2), round(pressure, 2), round(current, 2)
 
-    # A. Lưu dự phòng vào SQLite trên máy tính
+    # A. Luôn lưu đầy đủ 2 giây/mẫu vào SQLite cục bộ tại phòng điều khiển
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
@@ -193,24 +199,35 @@ def luu_va_day_du_lieu(temp1, temp2, speed, pressure, current):
     conn.commit()
     conn.close()
 
-    # B. Đẩy thẳng lên Supabase Cloud
-    endpoint = f"{SUPABASE_URL}/rest/v1/du_lieu_plc_db3"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=minimal"
-    }
-    du_lieu_cloud = {
-        "thoi_gian": thoi_gian,
-        "temp1": t1,
-        "temp2": t2,
-        "speed": sp,
-        "pressure": pr,
-        "motor_current": cur
-    }
-    res = requests.post(endpoint, json=du_lieu_cloud, headers=headers, timeout=10)
-    res.raise_for_status()
+    # B. Báo cáo theo ngoại lệ (Report by Exception) lên Supabase Cloud
+    bay_gio = time.time()
+    bien_dong_manh = (
+        abs(t1 - gia_tri_cloud_cuoi["temp1"]) >= 1.5
+        or abs(t2 - gia_tri_cloud_cuoi["temp2"]) >= 1.5
+        or abs(cur - gia_tri_cloud_cuoi["current"]) >= 2.0
+    )
+    da_den_chu_ky = (bay_gio - thoi_diem_day_cloud_cuoi) >= CHU_KY_DAY_CLOUD
+
+    if dang_bi_loi or bien_dong_manh or da_den_chu_ky:
+        endpoint = f"{SUPABASE_URL}/rest/v1/du_lieu_plc_db3"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+        du_lieu_cloud = {
+            "thoi_gian": thoi_gian,
+            "temp1": t1,
+            "temp2": t2,
+            "speed": sp,
+            "pressure": pr,
+            "motor_current": cur
+        }
+        res = requests.post(endpoint, json=du_lieu_cloud, headers=headers, timeout=10)
+        res.raise_for_status()
+        thoi_diem_day_cloud_cuoi = bay_gio
+        gia_tri_cloud_cuoi = {"temp1": t1, "temp2": t2, "current": cur}
 
 
 def don_dep_du_lieu_cloud(so_ngay_giu_lai=7):
@@ -319,7 +336,7 @@ try:
             except Exception as e_read:
                 print(f"⚠️ Lỗi đọc/gửi dữ liệu: {e_read}")
 
-            time.sleep(3)
+            time.sleep(2)
 except Exception as e_conn:
     print(f"❌ Không thể kết nối tới PLC: {e_conn}")
 finally:
