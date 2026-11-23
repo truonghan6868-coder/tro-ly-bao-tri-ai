@@ -26,6 +26,26 @@ def lay_danh_sach_ho_so_cloud():
     res = requests.get(endpoint, headers=headers, timeout=10)
     res.raise_for_status()
     return res.json()
+@st.cache_data(ttl=10, show_spinner=False)
+def lay_danh_sach_ten_thiet_bi_cloud():
+    mac_dinh = [
+        "Toàn dây chuyền Máy Xeo",
+        "Cụm Lô ép (Press Roll - 75kW)",
+        "Khu vực Sấy (Dryer)",
+        "Hệ thống Bơm chân không",
+        "Đo nồng độ bột (OC) / Bể khuấy",
+    ]
+    try:
+        url_du_an, headers = _lay_headers_supabase()
+        endpoint = f"{url_du_an}/rest/v1/cau_hinh_nguong?select=vi_tri_may&order=db_number.asc,byte_offset.asc"
+        res = requests.get(endpoint, headers=headers, timeout=6)
+        res.raise_for_status()
+        ds = [item["vi_tri_may"] for item in res.json() if item.get("vi_tri_may")]
+        if ds:
+            return ["Toàn dây chuyền Máy Xeo"] + ds
+    except Exception:
+        pass
+    return mac_dinh
 
 
 def tao_ho_so_moi_cloud(ten_ho_so, cum_thiet_bi, trang_thai, nguoi_phu_trach):
@@ -199,13 +219,8 @@ def hien_thi_sidebar_ho_so_cloud(client_gemini=None, ten_model="gemini-2.5-flash
     with st.expander("➕ Tạo Hồ Sơ Sự Cố / Bảo Trì Mới", expanded=False):
         with st.form("form_tao_ho_so_cloud", clear_on_submit=True):
             ten_moi = st.text_input("Tên sự cố / Hạng mục", placeholder="VD: Quá nhiệt ổ bi Lô ép 1")
-            cum_moi = st.selectbox("Cụm thiết bị", [
-                "Toàn dây chuyền Máy Xeo",
-                "Cụm Lô ép (Press Roll - 75kW)",
-                "Hệ thống Biến tần ABB ACS880",
-                "Khu vực Sấy & Chuẩn bị bột",
-                "Hệ thống Bơm chân không"
-            ])
+            cum_moi = st.selectbox("Cụm thiết bị", lay_danh_sach_ten_thiet_bi_cloud())
+
             nguoi_pt = st.text_input("Người phụ trách", placeholder="VD: Kỹ thuật Điện")
             tt_khoi_tao = st.selectbox("Mức độ / Trạng thái", cac_trang_thai)
             if st.form_submit_button("✅ Khởi tạo hồ sơ", use_container_width=True):

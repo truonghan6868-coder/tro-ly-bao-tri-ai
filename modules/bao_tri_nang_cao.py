@@ -4,6 +4,7 @@ import pandas as pd
 from pypdf import PdfReader
 import requests
 import streamlit as st
+from modules.quan_ly_ho_so import lay_danh_sach_ten_thiet_bi_cloud
 
 
 def _lay_cau_hinh_supabase():
@@ -270,13 +271,7 @@ def hien_thi_lich_bao_duong_pm():
             with p1:
                 hang_muc_moi = st.text_input("Tên hạng mục bảo dưỡng", placeholder="VD: Thay dầu hộp giảm tốc Lô ép")
             with p2:
-                cum_tb_moi = st.selectbox("Cụm thiết bị", [
-                    "Cụm Lô ép (Press Roll - 75kW)",
-                    "Hệ thống Biến tần ABB ACS880",
-                    "Khu vực Sấy & Chuẩn bị bột",
-                    "Hệ thống Bơm chân không",
-                    "Toàn dây chuyền Máy Xeo",
-                ])
+                cum_tb_moi = st.selectbox("Cụm thiết bị", lay_danh_sach_ten_thiet_bi_cloud())
             with p3:
                 chu_ky_moi = st.number_input("Chu kỳ (ngày)", min_value=1, max_value=365, value=30, step=1)
 

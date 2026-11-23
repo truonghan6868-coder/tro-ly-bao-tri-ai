@@ -3,6 +3,7 @@ from datetime import datetime
 import pandas as pd
 import requests
 import streamlit as st
+from modules.quan_ly_ho_so import lay_danh_sach_ten_thiet_bi_cloud
 
 
 def lay_danh_sach_ban_giao(limit=20):
@@ -46,12 +47,8 @@ def hien_thi_so_ban_giao_ca():
                 "☀️ Ca Ngày (07:00 - 19:00)",
                 "🌙 Ca Đêm (19:00 - 07:00)"
             ], index=ca_mac_dinh)
-            cum_thiet_bi = st.selectbox("⚙️ Cụm thiết bị chính", [
-                "Toàn dây chuyền Máy Xeo",
-                "Cụm Lô ép (Press Roll - 75kW)",
-                "Hệ thống Biến tần ABB ACS880",
-                "Khu vực Sấy & Chuẩn bị bột"
-            ])
+            cum_thiet_bi = st.selectbox("⚙️ Cụm thiết bị chính", lay_danh_sach_ten_thiet_bi_cloud())
+
         with c2:
             nguoi_ban_giao = st.text_input("👷 Trưởng ca / Kỹ thuật giao", placeholder="VD: Nguyễn Văn A")
             nguoi_nhan_ca = st.text_input("👷 Trưởng ca / Kỹ thuật nhận", placeholder="VD: Trần Văn B")
