@@ -2,7 +2,13 @@ import os
 import time
 from datetime import datetime
 import pandas as pd
-from pypdf import PdfReader
+from modules.bao_tri_nang_cao import (
+    chan_doan_offline_du_phong,
+    hien_thi_kho_tai_lieu_dung_chung,
+    hien_thi_lich_bao_duong_pm,
+    trich_loc_doan_tai_lieu_lien_quan,
+    trich_xuat_pdf_chuan_bang_bieu,
+)
 import requests
 import streamlit as st
 from dotenv import load_dotenv
@@ -16,11 +22,7 @@ from modules.quan_ly_ho_so import (
 )
 from modules.tab_bao_cao import hien_thi_tab_bao_cao
 from modules.tab_giam_sat import hien_thi_tab_giam_sat
-from modules.bao_tri_nang_cao import (
-    chan_doan_offline_du_phong,
-    hien_thi_kho_tai_lieu_dung_chung,
-    hien_thi_lich_bao_duong_pm,trich_loc_doan_tai_lieu_lien_quan,
-)
+
 
 load_dotenv()
 client = genai.Client()
@@ -69,17 +71,13 @@ def doc_du_lieu_bang(uploaded_file):
 
 def doc_noi_dung_pdf(uploaded_file):
     ten_file = uploaded_file.name
-    noi_dung_text = [f"\n--- NỘI DUNG TÀI LIỆU PDF: {ten_file} ---"]
     try:
         uploaded_file.seek(0)
-        reader = PdfReader(uploaded_file)
-        for so_trang, page in enumerate(reader.pages, start=1):
-            text = page.extract_text()
-            if text:
-                noi_dung_text.append(f"[Trang {so_trang}]:\n{text}")
+        noi_dung = trich_xuat_pdf_chuan_bang_bieu(uploaded_file.read())
+        return f"\n--- NỘI DUNG TÀI LIỆU PDF: {ten_file} ---\n{noi_dung}"
     except Exception as e:
-        noi_dung_text.append(f"Lỗi đọc PDF {ten_file}: {e}")
-    return "\n".join(noi_dung_text)
+        return f"\n--- Lỗi đọc PDF {ten_file}: {e} ---"
+
 
 
 # --- THANH BÊN (SIDEBAR): QUẢN LÝ HỒ SƠ CLOUD & TÀI LIỆU ---

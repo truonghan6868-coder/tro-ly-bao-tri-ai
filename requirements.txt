@@ -7,3 +7,6 @@ python-docx
 pypdf
 streamlit-autorefresh
 supabase
+pymupdf
+requests
+altair
