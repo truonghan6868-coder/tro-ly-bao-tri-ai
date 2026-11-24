@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timedelta
+import fitz  # pymupdf
 import pandas as pd
-from pypdf import PdfReader
 import requests
 import streamlit as st
 from modules.quan_ly_ho_so import lay_danh_sach_ten_thiet_bi_cloud
@@ -20,8 +20,28 @@ def _lay_cau_hinh_supabase():
 
 
 # =====================================================================
-# 1. KHO TÀI LIỆU KỸ THUẬT DÙNG CHUNG (MANUAL LIBRARY)
+# 1. KHO TÀI LIỆU KỸ THUẬT DÙNG CHUNG (MANUAL LIBRARY - PYMUPDF)
 # =====================================================================
+def trich_xuat_pdf_chuan_bang_bieu(file_bytes):
+    """Dùng PyMuPDF (fitz) đọc văn bản và tự động chuyển đổi bảng mã lỗi/thông số sang định dạng Markdown."""
+    noi_dung_list = []
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    for idx, page in enumerate(doc, start=1):
+        phan_trang = [f"\n--- [Trang {idx}] ---"]
+        tables = page.find_tables()
+        if tables and tables.tables:
+            for t_idx, tab in enumerate(tables.tables, start=1):
+                md_table = tab.to_markdown()
+                if md_table:
+                    phan_trang.append(f"[Bảng {t_idx} - Trang {idx}]:\n{md_table}")
+        txt = page.get_text("text")
+        if txt and txt.strip():
+            phan_trang.append(txt.strip())
+        noi_dung_list.append("\n".join(phan_trang))
+    doc.close()
+    return "\n".join(noi_dung_list)
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def tai_danh_sach_tai_lieu_cloud():
     url_du_an, headers = _lay_cau_hinh_supabase()
@@ -37,12 +57,8 @@ def luu_tai_lieu_len_thu_vien(uploaded_file, nguoi_tai="Tổ Bảo Trì"):
     uploaded_file.seek(0)
 
     if ten_file.lower().endswith(".pdf"):
-        loai = "PDF Manual"
-        reader = PdfReader(uploaded_file)
-        for idx, page in enumerate(reader.pages, start=1):
-            txt = page.extract_text()
-            if txt:
-                noi_dung_list.append(f"[Trang {idx}]: {txt}")
+        loai = "PDF Manual (Bảng biểu chuẩn)"
+        noi_dung_list.append(trich_xuat_pdf_chuan_bang_bieu(uploaded_file.read()))
     elif ten_file.lower().endswith(".csv"):
         loai = "CSV Data"
         df = pd.read_csv(uploaded_file)
@@ -53,7 +69,7 @@ def luu_tai_lieu_len_thu_vien(uploaded_file, nguoi_tai="Tổ Bảo Trì"):
         for sheet, df in excel_data.items():
             noi_dung_list.append(f"[Sheet: {sheet}]\n{df.to_string(index=False)}")
 
-    noi_dung_gop = "\n".join(noi_dung_list)[:60000]
+    noi_dung_gop = "\n".join(noi_dung_list)[:150000]
 
     url_du_an, headers = _lay_cau_hinh_supabase()
     headers["Prefer"] = "return=minimal"
@@ -65,8 +81,9 @@ def luu_tai_lieu_len_thu_vien(uploaded_file, nguoi_tai="Tổ Bảo Trì"):
         "nguoi_tai_len": nguoi_tai,
         "ngay_tai_len": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
-    res = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+    res = requests.post(endpoint, json=payload, headers=headers, timeout=20)
     res.raise_for_status()
+    st.cache_data.clear()
 
 
 def xoa_tai_lieu_thu_vien(doc_id):
@@ -75,6 +92,7 @@ def xoa_tai_lieu_thu_vien(doc_id):
     endpoint = f"{url_du_an}/rest/v1/thu_vien_tai_lieu?id=eq.{doc_id}"
     res = requests.delete(endpoint, headers=headers, timeout=10)
     res.raise_for_status()
+
 
 def trich_loc_doan_tai_lieu_lien_quan(noi_dung_goc, tu_khoa_cau_hoi="", gioi_han_ky_tu=12000):
     if not noi_dung_goc:
@@ -99,6 +117,7 @@ def trich_loc_doan_tai_lieu_lien_quan(noi_dung_goc, tu_khoa_cau_hoi="", gioi_han
         return noi_dung_goc[:gioi_han_ky_tu]
     return "\n\n".join(doan_chon)
 
+
 def hien_thi_kho_tai_lieu_dung_chung():
     st.subheader("📚 Kho Tài Liệu Kỹ Thuật Dùng Chung (Cloud Manual)")
     st.caption("Tài liệu lưu tại đây được dùng chung cho cả tổ bảo trì trên mọi điện thoại mà không cần tải lại mỗi lần truy cập.")
@@ -109,7 +128,7 @@ def hien_thi_kho_tai_lieu_dung_chung():
             nguoi_gui = st.text_input("Người tải lên", value="Kỹ thuật Điện - TĐH")
             if st.form_submit_button("☁️ Lưu vào Kho Dùng Chung", type="primary"):
                 if file_moi is not None:
-                    with st.spinner("Đang trích xuất nội dung và lưu lên Cloud..."):
+                    with st.spinner("Đang bóc tách bảng biểu & lưu lên Cloud..."):
                         try:
                             luu_tai_lieu_len_thu_vien(file_moi, nguoi_gui)
                             st.cache_data.clear()
@@ -162,7 +181,7 @@ def chan_doan_offline_du_phong(cau_hoi, df_plc=None):
     ]
 
     if df_plc is not None and not df_plc.empty:
-        moi_nhat = df_plc.to_dict(orient="records").pop(0)
+        moi_nhat = df_plc.to_dict(orient="records")[0]
         t1 = float(moi_nhat.get("temp1", 0))
         t2 = float(moi_nhat.get("temp2", 0))
         cur = float(moi_nhat.get("motor_current", 0))
@@ -233,7 +252,7 @@ def gui_nhac_viec_pm_telegram_thu_cong(ds_pm):
             tt = f"🟢 Còn {so_ngay} ngày (Hạn: {item['ngay_den_han']})"
         dong_tin.append(f"• <b>{item['hang_muc']}</b> [{item['cum_thiet_bi']}] — {tt} (Phụ trách: {item['nguoi_phu_trach']})")
 
-    dong_tin.append("\n👉 Anh em bảo trì thực hiện xong nhớ vào <b>Tab 3</b> trên Web bấm <b>'✅ Đã hoàn thành'</b> nhé!")
+    dong_tin.append("\n👉 Anh em bảo trì thực hiện xong nhớ vào <b>Tab 3</b> trên Web bấm <b>'✅ Hoàn thành'</b> nhé!")
     url_tg = "https://" + "api.telegram.org/bot" + f"{tg_token}/sendMessage"
     res = requests.post(url_tg, json={"chat_id": tg_chat_id, "text": "\n".join(dong_tin), "parse_mode": "HTML"}, timeout=10)
     res.raise_for_status()
@@ -351,3 +370,4 @@ def hien_thi_lich_bao_duong_pm():
                         st.rerun()
     else:
         st.info("Chưa có hạng mục bảo dưỡng định kỳ nào.")
+
