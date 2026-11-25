@@ -344,10 +344,13 @@ def hien_thi_lich_bao_duong_pm():
                         f"Hạn tiếp theo: **`{item['ngay_den_han']}`** | Phụ trách: **{item['nguoi_phu_trach']}** | Ghi chú: {item['ghi_chu']}"
                     )
             with col_done:
-                can_lam_ngay = so_ngay_con_lai <= 3
-                nhan_nut = "👉 Xác nhận đã làm" if can_lam_ngay else "📝 Báo cáo xong"
+                da_lam_hom_nay = (item.get("ngay_thuc_hien_cuoi") == hom_nay.strftime("%Y-%m-%d"))
+                nguong_canh_bao = 0 if int(item["chu_ky_ngay"]) <= 3 else 3
+                can_lam_ngay = (not da_lam_hom_nay) and (so_ngay_con_lai <= nguong_canh_bao)
+                nhan_nut = "👉 Xác nhận đã làm" if can_lam_ngay else ("✔️ Đã làm hôm nay" if da_lam_hom_nay else "📝 Báo cáo xong")
                 kieu_nut = "primary" if can_lam_ngay else "secondary"
                 if st.button(nhan_nut, key=f"done_pm_{item['id']}", type=kieu_nut, use_container_width=True):
+
 
                         url_du_an, headers = _lay_cau_hinh_supabase()
                         ngay_moi = hom_nay + timedelta(days=int(item["chu_ky_ngay"]))
