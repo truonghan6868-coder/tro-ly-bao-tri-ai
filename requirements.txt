@@ -1,6 +1,7 @@
 streamlit
 google-genai
 python-dotenv
+python-snap7
 pandas
 openpyxl
 python-docx
