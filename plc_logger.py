@@ -16,6 +16,12 @@ PLC_SLOT = int(os.getenv("PLC_SLOT", 1))
 DB_NUMBER = int(os.getenv("PLC_DB_NUMBER", 3))
 DB_FILE = "bao_tri_ai.db"
 
+# Timeout & chính sách thử lại khi kết nối PLC
+PLC_TIMEOUT_MS = int(os.getenv("PLC_TIMEOUT_MS", 3000))       # timeout ping/send/recv (ms)
+PLC_RETRY_SO_LAN = int(os.getenv("PLC_RETRY_SO_LAN", 3))      # số lần thử nhanh khi khởi động
+PLC_RETRY_CHO_DAU = int(os.getenv("PLC_RETRY_CHO_DAU", 2))    # backoff khởi điểm (giây)
+PLC_RETRY_CHO_TOI_DA = int(os.getenv("PLC_RETRY_CHO_TOI_DA", 60))  # backoff tối đa (giây)
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
@@ -34,6 +40,10 @@ thoi_diem_bat_dau_loi = None
 thoi_diem_canh_bao_cuoi = 0
 THOI_GIAN_NGHI_CANH_BAO = 300  # Nhắc lại sau mỗi 5 phút nếu lỗi chưa khắc phục
 ngay_da_nhac_pm = ""
+
+# Trạng thái kết nối PLC (dùng cho cảnh báo mất kết nối / phục hồi)
+dang_mat_ket_noi = False
+thoi_diem_mat_ket_noi = None
 
 
 # 2. Khởi tạo bảng lưu dự phòng cục bộ trong SQLite
@@ -288,59 +298,236 @@ def kiem_tra_nhac_lich_bao_duong_pm():
         print(f"⚠️ Lỗi kiểm tra lịch PM: {e_pm}")
 
 
+# 2b. Theo dõi sự kiện kết nối PLC để truy vết sau (mất kết nối / phục hồi)
+def khoi_tao_bang_su_kien_ket_noi():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS su_kien_ket_noi_plc (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thoi_gian TEXT,
+            su_kien TEXT,
+            chi_tiet TEXT,
+            thoi_gian_gian_doan_giay REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def ghi_su_kien_ket_noi(su_kien, chi_tiet="", thoi_gian_gian_doan_giay=None):
+    """Ghi 1 sự kiện kết nối PLC vào SQLite cục bộ.
+
+    su_kien: MAT_KET_NOI | KHOI_PHUC
+    """
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO su_kien_ket_noi_plc
+               (thoi_gian, su_kien, chi_tiet, thoi_gian_gian_doan_giay)
+               VALUES (?, ?, ?, ?)""",
+            (
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                su_kien,
+                str(chi_tiet),
+                thoi_gian_gian_doan_giay,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e_sk:
+        print(f"⚠️ Không ghi được sự kiện kết nối vào SQLite: {e_sk}")
+
+
+def tao_client_plc():
+    """Tạo client Snap7 mới và đặt timeout kết nối/đọc.
+
+    Rack/slot được xử lý bên trong connect(); timeout đặt qua set_param()
+    (PingTimeout / SendTimeout / RecvTimeout) để không bị treo khi PLC mất mạng.
+    """
+    client = snap7.client.Client()
+    for ten_tham_so, gia_tri in (
+        ("PingTimeout", PLC_TIMEOUT_MS),
+        ("SendTimeout", PLC_TIMEOUT_MS),
+        ("RecvTimeout", PLC_TIMEOUT_MS),
+    ):
+        so_hieu = getattr(snap7.types, ten_tham_so, None)
+        if so_hieu is None:
+            continue
+        try:
+            client.set_param(so_hieu, gia_tri)
+        except Exception as e_param:
+            print(f"⚠️ Không đặt được {ten_tham_so}={gia_tri}ms: {e_param}")
+    return client
+
+
+def ket_noi_plc(so_lan_thu=None, cho_giay_dau=None, cho_giay_toi_da=None):
+    """Kết nối tới PLC, tự thử lại với backoff luỹ thừa.
+
+    so_lan_thu=None -> thử mãi cho tới khi thành công (không thoát script).
+    Trả về True nếu kết nối được, False nếu đã hết số lần thử.
+    """
+    global plc
+    cho_giay_dau = PLC_RETRY_CHO_DAU if cho_giay_dau is None else cho_giay_dau
+    cho_giay_toi_da = PLC_RETRY_CHO_TOI_DA if cho_giay_toi_da is None else cho_giay_toi_da
+    lan = 0
+    cho = cho_giay_dau
+
+    while so_lan_thu is None or lan < so_lan_thu:
+        lan += 1
+        try:
+            if plc.get_connected():
+                plc.disconnect()
+        except Exception:
+            pass
+        try:
+            plc.connect(PLC_IP, PLC_RACK, PLC_SLOT)
+            if plc.get_connected():
+                print(f"✅ Kết nối PLC thành công (lần thử {lan}).")
+                return True
+        except Exception as e_conn:
+            print(f"⚠️ Lần thử {lan} thất bại: {e_conn}")
+            try:
+                plc.disconnect()
+            except Exception:
+                pass
+            plc = tao_client_plc()  # tạo client mới để xoá trạng thái lỗi
+
+        if so_lan_thu is not None and lan >= so_lan_thu:
+            break
+        print(f"   ↻ Thử lại sau {cho}s...")
+        time.sleep(cho)
+        cho = min(cho * 2, cho_giay_toi_da)
+
+    return False
+
+
+def khong_con_ket_noi():
+    try:
+        return not plc.get_connected()
+    except Exception:
+        return True
+
+
+def xu_ly_mat_ket_noi(ly_do):
+    """Ghi SQLite + cảnh báo Telegram khi mất kết nối (chỉ 1 lần mỗi đợt)."""
+    global dang_mat_ket_noi, thoi_diem_mat_ket_noi
+    if dang_mat_ket_noi:
+        return
+    dang_mat_ket_noi = True
+    thoi_diem_mat_ket_noi = datetime.now()
+
+    print(f"🔌 MẤT KẾT NỐI PLC: {ly_do}")
+    ghi_su_kien_ket_noi("MAT_KET_NOI", ly_do)
+    gui_tin_nhan_telegram(
+        f"🔌 <b>MẤT KẾT NỐI PLC</b>\n"
+        f"📍 Trạm: {VI_TRI_MAY_TRAM}\n"
+        f"🌐 Địa chỉ: {PLC_IP} (rack {PLC_RACK}, slot {PLC_SLOT})\n"
+        f"⚠️ Lý do: {ly_do}\n"
+        f"⏰ Thời điểm: {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}\n"
+        f"🔁 Hệ thống đang tự động thử kết nối lại...",
+        "MẤT KẾT NỐI PLC",
+    )
+
+
+def xu_ly_khoi_phuc():
+    """Ghi SQLite + báo Telegram khi kết nối lại được, kèm thời gian gián đoạn."""
+    global dang_mat_ket_noi, thoi_diem_mat_ket_noi
+    if not dang_mat_ket_noi:
+        return
+
+    tong_giay = 0.0
+    if thoi_diem_mat_ket_noi:
+        tong_giay = (datetime.now() - thoi_diem_mat_ket_noi).total_seconds()
+    dang_mat_ket_noi = False
+    thoi_diem_mat_ket_noi = None
+
+    print(f"✅ ĐÃ KẾT NỐI LẠI PLC (gián đoạn {dinh_dang_thoi_gian_su_co(tong_giay)}).")
+    ghi_su_kien_ket_noi(
+        "KHOI_PHUC",
+        f"Gián đoạn {dinh_dang_thoi_gian_su_co(tong_giay)}",
+        round(tong_giay, 1),
+    )
+    gui_tin_nhan_telegram(
+        f"✅ <b>ĐÃ KẾT NỐI LẠI PLC</b>\n"
+        f"📍 Trạm: {VI_TRI_MAY_TRAM}\n"
+        f"⏱️ Tổng thời gian gián đoạn: <b>{dinh_dang_thoi_gian_su_co(tong_giay)}</b>\n"
+        f"⏰ Thời điểm: {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}",
+        "KẾT NỐI LẠI PLC",
+    )
+
+
 # 3. Kết nối PLC và chạy vòng lặp đọc - ghi - cảnh báo 2 chiều
 khoi_tao_bang_plc()
-plc = snap7.client.Client()
+khoi_tao_bang_su_kien_ket_noi()
+plc = tao_client_plc()
 
 print(f"Đang kết nối tới PLC Siemens ({PLC_IP}) cho trạm [{VI_TRI_MAY_TRAM}]...")
 
+# Thử nhanh vài lần; nếu vẫn thất bại thì báo Telegram rồi kiên trì thử lại (không thoát script)
+if not ket_noi_plc(so_lan_thu=PLC_RETRY_SO_LAN):
+    xu_ly_mat_ket_noi(
+        f"Không kết nối được tới {PLC_IP} (rack {PLC_RACK}, slot {PLC_SLOT}) "
+        f"sau {PLC_RETRY_SO_LAN} lần thử"
+    )
+    ket_noi_plc()          # thử mãi cho tới khi PLC lên nguồn / thông mạng
+    xu_ly_khoi_phuc()
+
+print("✅ Kết nối thành công! Hệ thống giám sát 2 chiều & đồng bộ ngưỡng đang chạy.\n")
+
+dem_chu_ky = 0
+
 try:
-    plc.connect(PLC_IP, PLC_RACK, PLC_SLOT)
-    if plc.get_connected():
-        print("✅ Kết nối thành công! Hệ thống giám sát 2 chiều & đồng bộ ngưỡng đang chạy.\n")
-        dem_chu_ky = 0
+    while True:
+        try:
+            # Đồng bộ lại ngưỡng cảnh báo từ Supabase mỗi 60 giây (20 chu kỳ x 3s)
+            if dem_chu_ky % 20 == 0:
+                dong_bo_nguong_tu_cloud()
+                kiem_tra_nhac_lich_bao_duong_pm()
 
-        while True:
-            try:
-                # Đồng bộ lại ngưỡng cảnh báo từ Supabase mỗi 60 giây (20 chu kỳ x 3s)
-                if dem_chu_ky % 20 == 0:
-                    dong_bo_nguong_tu_cloud()
-                    kiem_tra_nhac_lich_bao_duong_pm()
+            data = plc.db_read(DB_NUMBER, 0, 20)
+            temp1 = get_real(data, 0)
+            temp2 = get_real(data, 4)
+            speed = get_real(data, 8)
+            pressure = get_real(data, 12)
+            motor_current = get_real(data, 16)
 
-                data = plc.db_read(DB_NUMBER, 0, 20)
-                temp1 = get_real(data, 0)
-                temp2 = get_real(data, 4)
-                speed = get_real(data, 8)
-                pressure = get_real(data, 12)
-                motor_current = get_real(data, 16)
+            # Kiểm tra cảnh báo 2 chiều (Báo lỗi & Báo phục hồi)
+            kiem_tra_canh_bao_hai_chieu(temp1, temp2, speed, pressure, motor_current)
 
-                # Kiểm tra cảnh báo 2 chiều (Báo lỗi & Báo phục hồi)
-                kiem_tra_canh_bao_hai_chieu(temp1, temp2, speed, pressure, motor_current)
+            # Lưu SQLite & Đẩy lên Cloud
+            luu_va_day_du_lieu(temp1, temp2, speed, pressure, motor_current)
 
-                # Lưu SQLite & Đẩy lên Cloud
-                luu_va_day_du_lieu(temp1, temp2, speed, pressure, motor_current)
+            gio = datetime.now().strftime("%H:%M:%S")
+            trang_thai_text = "🔴 ĐANG LỖI" if dang_bi_loi else "🟢 AN TOÀN"
+            print(
+                f"[{gio}] {trang_thai_text} (Ngưỡng: {NGUONG_TEMP1}°C/{NGUONG_CURRENT}A) | "
+                f"T1: {temp1:.1f}°C | T2: {temp2:.1f}°C | "
+                f"Spd: {speed:.1f} | Prs: {pressure:.2f} | Cur: {motor_current:.2f} A"
+            )
 
-                gio = datetime.now().strftime("%H:%M:%S")
-                trang_thai_text = "🔴 ĐANG LỖI" if dang_bi_loi else "🟢 AN TOÀN"
-                print(
-                    f"[{gio}] {trang_thai_text} (Ngưỡng: {NGUONG_TEMP1}°C/{NGUONG_CURRENT}A) | "
-                    f"T1: {temp1:.1f}°C | T2: {temp2:.1f}°C | "
-                    f"Spd: {speed:.1f} | Prs: {pressure:.2f} | Cur: {motor_current:.2f} A"
-                )
+            dem_chu_ky += 1
+            if dem_chu_ky >= 1000:
+                don_dep_du_lieu_cloud(so_ngay_giu_lai=7)
+                dem_chu_ky = 0
 
-                dem_chu_ky += 1
-                if dem_chu_ky >= 1000:
-                    don_dep_du_lieu_cloud(so_ngay_giu_lai=7)
+        except Exception as e_read:
+            print(f"⚠️ Lỗi đọc/gửi dữ liệu: {e_read}")
+            # Nếu nguyên nhân là mất kết nối PLC -> cảnh báo, ghi log và tự kết nối lại
+            if khong_con_ket_noi():
+                xu_ly_mat_ket_noi(e_read)
+                if ket_noi_plc():
+                    xu_ly_khoi_phuc()
                     dem_chu_ky = 0
 
-            except Exception as e_read:
-                print(f"⚠️ Lỗi đọc/gửi dữ liệu: {e_read}")
-
-            time.sleep(2)
-except Exception as e_conn:
-    print(f"❌ Không thể kết nối tới PLC: {e_conn}")
+        time.sleep(2)
 finally:
-    if plc.get_connected():
-        plc.disconnect()
+    try:
+        if plc.get_connected():
+            plc.disconnect()
+    except Exception:
+        pass
+
 
 
