@@ -21,6 +21,7 @@ PLC_TIMEOUT_MS = int(os.getenv("PLC_TIMEOUT_MS", 3000))       # timeout ping/sen
 PLC_RETRY_SO_LAN = int(os.getenv("PLC_RETRY_SO_LAN", 3))      # số lần thử nhanh khi khởi động
 PLC_RETRY_CHO_DAU = int(os.getenv("PLC_RETRY_CHO_DAU", 2))    # backoff khởi điểm (giây)
 PLC_RETRY_CHO_TOI_DA = int(os.getenv("PLC_RETRY_CHO_TOI_DA", 60))  # backoff tối đa (giây)
+PLC_SO_LOI_TRUOC_KHI_NOI_LAI = int(os.getenv("PLC_SO_LOI_TRUOC_KHI_NOI_LAI", 3))  # số lỗi đọc liên tiếp trước khi buộc nối lại
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -455,6 +456,31 @@ def khong_con_ket_noi():
         return True
 
 
+# snap7 có thể vẫn báo get_connected() == True sau khi socket đã chết
+# (ví dụ WinError 10054 "connection forcibly closed"). Vì vậy còn phải soi nội dung lỗi.
+DAU_HIEU_MAT_KET_NOI = (
+    "not connected",
+    "10054",
+    "10053",
+    "10060",
+    "10061",
+    "connection",
+    "socket",
+    "recv",
+    "send",
+    "iso",
+    "tcp",
+)
+
+
+def loi_lien_quan_ket_noi(loi):
+    """Đoán xem exception có phải do đứt kết nối PLC hay không."""
+    if isinstance(loi, (ConnectionError, TimeoutError)):
+        return True
+    chuoi_loi = str(loi).lower()
+    return any(dau_hieu in chuoi_loi for dau_hieu in DAU_HIEU_MAT_KET_NOI)
+
+
 def xu_ly_mat_ket_noi(ly_do):
     """Ghi SQLite + cảnh báo Telegram khi mất kết nối (chỉ 1 lần mỗi đợt)."""
     global dang_mat_ket_noi, thoi_diem_mat_ket_noi
@@ -508,6 +534,8 @@ khoi_tao_bang_plc()
 khoi_tao_bang_su_kien_ket_noi()
 plc = tao_client_plc()
 
+PHIEN_BAN = "v3"
+print(f"🔧 plc_logger {PHIEN_BAN} — có tự kết nối lại + đẩy sự kiện lên Supabase")
 print(f"Đang kết nối tới PLC Siemens ({PLC_IP}) cho trạm [{VI_TRI_MAY_TRAM}]...")
 
 # Thử nhanh vài lần; nếu vẫn thất bại thì báo Telegram rồi kiên trì thử lại (không thoát script)
@@ -522,6 +550,7 @@ if not ket_noi_plc(so_lan_thu=PLC_RETRY_SO_LAN):
 print("✅ Kết nối thành công! Hệ thống giám sát 2 chiều & đồng bộ ngưỡng đang chạy.\n")
 
 dem_chu_ky = 0
+so_loi_lien_tiep = 0
 
 try:
     while True:
@@ -557,14 +586,25 @@ try:
                 don_dep_du_lieu_cloud(so_ngay_giu_lai=7)
                 dem_chu_ky = 0
 
+            so_loi_lien_tiep = 0  # đọc thành công -> reset bộ đếm lỗi
+
         except Exception as e_read:
             print(f"⚠️ Lỗi đọc/gửi dữ liệu: {e_read}")
-            # Nếu nguyên nhân là mất kết nối PLC -> cảnh báo, ghi log và tự kết nối lại
-            if khong_con_ket_noi():
+            so_loi_lien_tiep += 1
+
+            # Mất kết nối thật sự khi: get_connected() = False, hoặc lỗi thuộc nhóm mạng/socket,
+            # hoặc lỗi lặp lại liên tiếp (snap7 có thể báo connected sai sau khi socket đã chết).
+            mat_ket_noi = (
+                khong_con_ket_noi()
+                or loi_lien_quan_ket_noi(e_read)
+                or so_loi_lien_tiep >= PLC_SO_LOI_TRUOC_KHI_NOI_LAI
+            )
+            if mat_ket_noi:
                 xu_ly_mat_ket_noi(e_read)
                 if ket_noi_plc():
                     xu_ly_khoi_phuc()
                     dem_chu_ky = 0
+                    so_loi_lien_tiep = 0
 
         time.sleep(2)
 finally:
