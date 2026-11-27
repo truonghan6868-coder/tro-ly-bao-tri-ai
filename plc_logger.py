@@ -192,6 +192,42 @@ thoi_diem_day_cloud_cuoi = 0
 CHU_KY_DAY_CLOUD = 20  # Đẩy lên Supabase mỗi 20 giây nếu thông số ổn định
 gia_tri_cloud_cuoi = {"temp1": 0.0, "temp2": 0.0, "current": 0.0}
 
+def post_supabase(endpoint, du_lieu, so_lan_thu=3, cho_giay_dau=1, cho_giay_toi_da=15):
+    """POST JSON lên Supabase, tự thử lại với backoff luỹ thừa.
+
+    Trả về True nếu đẩy thành công, False nếu thất bại sau so_lan_thu lần.
+    Không ném exception để vòng lặp đọc PLC không bị gián đoạn.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    cho = cho_giay_dau
+    for lan in range(1, so_lan_thu + 1):
+        try:
+            res = requests.post(endpoint, json=du_lieu, headers=headers, timeout=10)
+            res.raise_for_status()
+            return True
+        except Exception as e_cloud:
+            ma_loi = getattr(getattr(e_cloud, "response", None), "status_code", None)
+            if ma_loi == 404:
+                print("⚠️ Bảng đích chưa có trên Supabase (404) — chạy file supabase/su_kien_ket_noi_plc.sql trước.")
+                return False
+            if ma_loi is not None and 400 <= ma_loi < 500 and ma_loi != 429:
+                print(f"⚠️ Supabase từ chối yêu cầu ({ma_loi}), không thử lại: {e_cloud}")
+                return False
+            print(f"⚠️ Đẩy Supabase thất bại (lần {lan}/{so_lan_thu}): {e_cloud}")
+            if lan < so_lan_thu:
+                time.sleep(cho)
+                cho = min(cho * 2, cho_giay_toi_da)
+    return False
+
+
 def luu_va_day_du_lieu(temp1, temp2, speed, pressure, current):
     global thoi_diem_day_cloud_cuoi, gia_tri_cloud_cuoi
     thoi_gian = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -220,12 +256,6 @@ def luu_va_day_du_lieu(temp1, temp2, speed, pressure, current):
 
     if dang_bi_loi or bien_dong_manh or da_den_chu_ky:
         endpoint = f"{SUPABASE_URL}/rest/v1/du_lieu_plc_db3"
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "return=minimal"
-        }
         du_lieu_cloud = {
             "thoi_gian": thoi_gian,
             "temp1": t1,
@@ -234,10 +264,10 @@ def luu_va_day_du_lieu(temp1, temp2, speed, pressure, current):
             "pressure": pr,
             "motor_current": cur
         }
-        res = requests.post(endpoint, json=du_lieu_cloud, headers=headers, timeout=10)
-        res.raise_for_status()
-        thoi_diem_day_cloud_cuoi = bay_gio
-        gia_tri_cloud_cuoi = {"temp1": t1, "temp2": t2, "current": cur}
+        # Chỉ cập nhật mốc "lần đẩy cuối" khi đẩy thành công, để lần sau còn thử lại
+        if post_supabase(endpoint, du_lieu_cloud):
+            thoi_diem_day_cloud_cuoi = bay_gio
+            gia_tri_cloud_cuoi = {"temp1": t1, "temp2": t2, "current": cur}
 
 
 def don_dep_du_lieu_cloud(so_ngay_giu_lai=7):
@@ -316,10 +346,11 @@ def khoi_tao_bang_su_kien_ket_noi():
 
 
 def ghi_su_kien_ket_noi(su_kien, chi_tiet="", thoi_gian_gian_doan_giay=None):
-    """Ghi 1 sự kiện kết nối PLC vào SQLite cục bộ.
+    """Ghi 1 sự kiện kết nối PLC vào SQLite cục bộ và đẩy lên Supabase.
 
     su_kien: MAT_KET_NOI | KHOI_PHUC
     """
+    thoi_gian = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -328,7 +359,7 @@ def ghi_su_kien_ket_noi(su_kien, chi_tiet="", thoi_gian_gian_doan_giay=None):
                (thoi_gian, su_kien, chi_tiet, thoi_gian_gian_doan_giay)
                VALUES (?, ?, ?, ?)""",
             (
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                thoi_gian,
                 su_kien,
                 str(chi_tiet),
                 thoi_gian_gian_doan_giay,
@@ -338,6 +369,20 @@ def ghi_su_kien_ket_noi(su_kien, chi_tiet="", thoi_gian_gian_doan_giay=None):
         conn.close()
     except Exception as e_sk:
         print(f"⚠️ Không ghi được sự kiện kết nối vào SQLite: {e_sk}")
+
+    # Đẩy lên Supabase để xem trên web (best-effort: lỗi cloud không làm mất log cục bộ)
+    if SUPABASE_URL and SUPABASE_KEY:
+        post_supabase(
+            f"{SUPABASE_URL}/rest/v1/su_kien_ket_noi_plc",
+            {
+                "thoi_gian": thoi_gian,
+                "su_kien": su_kien,
+                "chi_tiet": str(chi_tiet),
+                "thoi_gian_gian_doan_giay": thoi_gian_gian_doan_giay,
+                "vi_tri_may": VI_TRI_MAY_TRAM,
+            },
+            so_lan_thu=3,
+        )
 
 
 def tao_client_plc():

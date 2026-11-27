@@ -111,6 +111,43 @@ def tai_du_lieu_theo_vi_tri(vi_tri_may, limit=50):
     return pd.DataFrame()
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def tai_su_kien_ket_noi(limit=15):
+    """Lấy các sự kiện mất kết nối / phục hồi PLC gần nhất từ Supabase."""
+    try:
+        url_du_an = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
+        key_du_an = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
+        endpoint = f"{url_du_an}/rest/v1/su_kien_ket_noi_plc"
+        headers = {
+            "apikey": key_du_an,
+            "Authorization": f"Bearer {key_du_an}",
+            "Cache-Control": "no-cache"
+        }
+        params = {"select": "*", "order": "id.desc", "limit": str(limit)}
+        res = requests.get(endpoint, headers=headers, params=params, timeout=8)
+        res.raise_for_status()
+        return pd.DataFrame(res.json())
+    except Exception:
+        return pd.DataFrame()
+
+
+def hien_thi_su_kien_ket_noi():
+    """Khối hiển thị lịch sử mất kết nối / phục hồi PLC do plc_logger.py đẩy lên."""
+    df_su_kien = tai_su_kien_ket_noi()
+    with st.expander("🔌 Lịch sử kết nối PLC (mất kết nối / phục hồi)", expanded=False):
+        if df_su_kien.empty:
+            st.caption("Chưa có sự kiện kết nối nào được ghi nhận.")
+            return
+
+        df_hien_thi = df_su_kien.copy()
+        if "su_kien" in df_hien_thi.columns:
+            nhan_su_kien = {"MAT_KET_NOI": "🔴 Mất kết nối", "KHOI_PHUC": "🟢 Phục hồi"}
+            df_hien_thi["su_kien"] = df_hien_thi["su_kien"].map(
+                lambda gia_tri: nhan_su_kien.get(gia_tri, gia_tri)
+            )
+        st.dataframe(df_hien_thi, use_container_width=True, hide_index=True)
+
+
 def hien_thi_tab_giam_sat(df_plc_chung, loi_ket_noi_plc, ham_luu_tin_nhan):
     gio_hien_tai = datetime.now().hour
     ca_mac_dinh = 0 if 7 <= gio_hien_tai < 19 else 1
@@ -327,4 +364,5 @@ def hien_thi_tab_giam_sat(df_plc_chung, loi_ket_noi_plc, ham_luu_tin_nhan):
         st.warning(f"Đang chờ dữ liệu từ Supabase Cloud... ({loi_ket_noi_plc})")
 
     st.divider()
+    hien_thi_su_kien_ket_noi()
     hien_thi_so_ban_giao_ca()
