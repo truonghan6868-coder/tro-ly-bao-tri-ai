@@ -386,25 +386,66 @@ def ghi_su_kien_ket_noi(su_kien, chi_tiet="", thoi_gian_gian_doan_giay=None):
         )
 
 
-def tao_client_plc():
-    """Tạo client Snap7 mới và đặt timeout kết nối/đọc.
+def lay_hang_so_timeout():
+    """Lấy mã tham số timeout theo đúng phiên bản python-snap7 đang cài.
 
-    Rack/slot được xử lý bên trong connect(); timeout đặt qua set_param()
-    (PingTimeout / SendTimeout / RecvTimeout) để không bị treo khi PLC mất mạng.
+    - v3.x trở lên: enum snap7.type.Parameter (PingTimeout/SendTimeout/RecvTimeout)
+    - v1.x / v2.x: hằng số nằm trong module snap7.types
+    Trả về {} nếu không xác định được — khi đó bỏ qua bước đặt timeout.
     """
-    client = snap7.client.Client()
-    for ten_tham_so, gia_tri in (
-        ("PingTimeout", PLC_TIMEOUT_MS),
-        ("SendTimeout", PLC_TIMEOUT_MS),
-        ("RecvTimeout", PLC_TIMEOUT_MS),
-    ):
-        so_hieu = getattr(snap7.types, ten_tham_so, None)
-        if so_hieu is None:
-            continue
+    hang_so = {}
+
+    try:
+        from snap7.type import Parameter  # python-snap7 >= 3
+        for ten_tham_so in ("PingTimeout", "SendTimeout", "RecvTimeout"):
+            thanh_vien = getattr(Parameter, ten_tham_so, None)
+            if thanh_vien is not None:
+                hang_so[int(thanh_vien)] = ten_tham_so
+    except Exception:
+        pass
+
+    if hang_so:
+        return hang_so
+
+    snap7_types = None
+    try:
+        from snap7 import types as snap7_types  # python-snap7 <= 2
+    except Exception:
         try:
-            client.set_param(so_hieu, gia_tri)
+            import snap7.types as snap7_types
+        except Exception:
+            snap7_types = None
+
+    if snap7_types is not None:
+        for ten_tham_so in ("PingTimeout", "SendTimeout", "RecvTimeout"):
+            so_hieu = getattr(snap7_types, ten_tham_so, None)
+            if so_hieu is not None:
+                hang_so[int(so_hieu)] = ten_tham_so
+    return hang_so
+
+
+def tao_client_plc():
+    """Tạo client Snap7 mới: đặt timeout và bật tự kết nối lại nếu thư viện hỗ trợ.
+
+    Rack/slot được xử lý bên trong connect(). Với python-snap7 >= 3, client còn
+    được bật sẵn auto_reconnect + backoff của chính thư viện.
+    """
+    client = None
+    try:
+        client = snap7.Client(
+            auto_reconnect=True,
+            max_retries=PLC_RETRY_SO_LAN,
+            retry_delay=PLC_RETRY_CHO_DAU,
+            backoff_factor=2.0,
+        )
+    except Exception:
+        client = snap7.client.Client()  # bản cũ không hỗ trợ auto_reconnect
+
+    for so_hieu, ten_tham_so in lay_hang_so_timeout().items():
+        try:
+            client.set_param(so_hieu, PLC_TIMEOUT_MS)
         except Exception as e_param:
-            print(f"⚠️ Không đặt được {ten_tham_so}={gia_tri}ms: {e_param}")
+            print(f"⚠️ Không đặt được {ten_tham_so}={PLC_TIMEOUT_MS}ms: {e_param}")
     return client
 
 
